@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "themis": {
+      "command": "themis-ai-mcp",
+      "args": ["--workspace", "/opt/themis"]
+    }
+  }
+}
