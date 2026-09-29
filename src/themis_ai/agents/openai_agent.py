@@ -60,8 +60,9 @@ REVIEW_SCHEMA: dict[str, Any] = {
 
 
 class OpenAIArchitectReviewer:
-    def __init__(self, cfg: OpenAIConfig, client: Any | None = None):
+    def __init__(self, cfg: OpenAIConfig, client: Any | None = None, target_notes: str = ""):
         self.cfg = cfg
+        self.target_notes = target_notes
         if client is None:
             try:
                 from openai import OpenAI
@@ -75,7 +76,7 @@ class OpenAIArchitectReviewer:
 
     def design(self, request: str, repo_context: str) -> Spec:
         data, usage = self._call(
-            prompts.ARCHITECT,
+            prompts.with_target(prompts.ARCHITECT, self.target_notes),
             f"## Request\n\n{request}\n\n## Repository context\n\n{repo_context}",
             "implementation_spec", SPEC_SCHEMA,
         )
@@ -84,7 +85,7 @@ class OpenAIArchitectReviewer:
     def review(self, kind: ReviewKind, request: str, spec: Spec, diff: str, checks: str) -> Review:
         diff = _truncate(diff, self.cfg.diff_budget_chars)
         data, usage = self._call(
-            prompts.REVIEW_PROMPTS[kind.value],
+            prompts.with_target(prompts.REVIEW_PROMPTS[kind.value], self.target_notes),
             f"## Original request\n\n{request}\n\n{spec.to_markdown()}\n\n"
             f"## Check results\n\n{checks}\n\n## Diff\n\n```diff\n{diff}\n```",
             f"{kind.value}_review", REVIEW_SCHEMA,

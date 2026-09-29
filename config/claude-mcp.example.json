@@ -2,7 +2,8 @@
   "mcpServers": {
     "themis": {
       "command": "themis-ai-mcp",
-      "args": ["--workspace", "/opt/themis"]
+      "args": ["-c", "/Users/<you>/src/chopin/config/targets/themis.yaml",
+               "--workspace", "/Users/<you>/src/themis"]
     }
   }
 }

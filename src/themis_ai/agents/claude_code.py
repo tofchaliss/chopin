@@ -8,6 +8,7 @@ changes and hands them to the independent reviewers.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Callable
@@ -19,8 +20,14 @@ from .base import ImplementationResult, Spec, Usage
 Runner = Callable[[list[str], Path, int], subprocess.CompletedProcess]
 
 
+# Set by an interactive Claude Code session; a nested ``claude -p`` started from
+# inside one (chopin run from a Claude Code terminal) refuses to start while it is set.
+NESTED_SESSION_ENV = "CLAUDECODE"
+
+
 def _default_runner(cmd: list[str], cwd: Path, timeout: int) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    env = {k: v for k, v in os.environ.items() if k != NESTED_SESSION_ENV}
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env)
 
 
 class ClaudeCodeImplementer:

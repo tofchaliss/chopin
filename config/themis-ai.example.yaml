@@ -1,17 +1,21 @@
-# Copy to <workspace>/.themis-ai.yaml. Every key is optional; defaults live in
-# src/themis_ai/config.py. Unknown keys are rejected.
+# Template for a target config. Keep it in chopin (config/targets/<name>.yaml) and
+# pass it with -c; <workspace>/.themis-ai.yaml is only a fallback. Every key is
+# optional; defaults live in src/themis_ai/config.py. Unknown keys are rejected.
+# target:
+#   name: my-repo
+#   notes_file: my-repo.md     # architecture rules for the OpenAI roles (relative to this file)
 openai:
   model: gpt-5                   # or set THEMIS_AI_OPENAI_MODEL
   api_key_env: OPENAI_API_KEY
 claude:
   permission_mode: acceptEdits
   resume_session: true
-  # mcp_config: /opt/chopin/config/claude-mcp.json
+  # mcp_config: ~/src/chopin/config/claude-mcp.json
 tests:
   command: [make, test]
   timeout_seconds: 1200
 lint:
-  command: [make, vet]
+  command: []                    # optional separate lint step
 workflow:
   base_branch: main
   branch_prefix: agent/
@@ -24,10 +28,13 @@ workflow:
   block_on_severity: high        # info | low | medium | high | critical
   delivery: commit               # commit | merge (approval) | push (approval)
   remote: origin
+  state_dir: ""                   # empty: $CHOPIN_HOME/<workspace name> or ~/.chopin/<workspace name>
 guardrails:
   # Extend rather than replace: listing a key replaces its default list.
   require_approval: [git_push, git_merge, delete_branch, delete_data, deploy,
                      modify_credentials, modify_infrastructure, approve_design]
 themis:
-  base_url: http://localhost:8080/api/v1
-  api_key_env: THEMIS_API_KEY
+  # One URL per greenfield service; listed keys override the defaults.
+  services:
+    registry: http://localhost:8082/api/v1
+  api_key_env: THEMIS_API_KEY    # sent as X-API-Key when set

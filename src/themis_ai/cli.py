@@ -16,9 +16,9 @@ import json
 import sys
 from pathlib import Path
 
-from .config import RuntimeConfig
+from .config import RuntimeConfig, resolve_state_dir
 from .orchestrator import Orchestrator, PreflightError
-from .state import Task, TaskState
+from .state import StateManager, Task, TaskState
 
 EXIT = {
     TaskState.COMPLETED: 0,
@@ -38,7 +38,7 @@ def build_orchestrator(workspace: Path, config_path: Path | None) -> Orchestrato
     mcp = Path(cfg.claude.mcp_config) if cfg.claude.mcp_config else None
     return Orchestrator(
         workspace, cfg,
-        architect=OpenAIArchitectReviewer(cfg.openai),
+        architect=OpenAIArchitectReviewer(cfg.openai, target_notes=cfg.target.notes()),
         implementer=ClaudeCodeImplementer(cfg.claude, workspace, mcp_config=mcp),
         on_event=lambda msg, task: print(f"[{task.id}] {msg}", file=sys.stderr, flush=True),
     )
@@ -60,7 +60,7 @@ def render(task: Task) -> str:
         lines.append(f"APPROVAL NEEDED: {task.approval.action} ({task.approval.reason})")
         lines.append("  -> themis-ai approve | themis-ai reject")
     if task.state is TaskState.ESCALATED:
-        lines.append("ESCALATED: review .agents/ and agent-state/decisions/, then "
+        lines.append("ESCALATED: review artifacts/ and decisions/ in the state directory, then "
                      "`themis-ai resume -g \"...\"` or `themis-ai abort`")
         if task.pending_feedback:
             lines.append("last feedback:\n" + task.pending_feedback[:2000])
@@ -92,14 +92,18 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
     ws = args.workspace.resolve()
 
+    try:
+        cfg = RuntimeConfig.load(ws, args.config)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"config: {e}", file=sys.stderr)
+        return 2
+    state = StateManager(resolve_state_dir(cfg, ws))
     if args.cmd == "history":
-        from .state import StateManager
-        for row in StateManager(ws).history():
+        for row in state.history():
             print(f"{row['id']}  {row['state']:<18} {row['branch']:<50} {row['request'][:60]}")
         return 0
     if args.cmd == "status":
-        from .state import StateManager
-        task = StateManager(ws).load(args.task)
+        task = state.load(args.task)
     else:
         orch = build_orchestrator(ws, args.config)
         try:

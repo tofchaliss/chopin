@@ -29,20 +29,21 @@ from pathlib import Path
 from typing import Callable
 
 from .agents.base import ArchitectReviewer, Implementer, Review, ReviewKind, Spec, Usage
-from .config import RuntimeConfig
+from .config import RuntimeConfig, resolve_state_dir
 from .gitops import LocalGit
 from .guardrails import ApprovalRequired, GuardrailViolation, Guardrails
 from .state import PendingApproval, StateManager, Task, TaskState, _now
 from .workspace import Workspace
 
-ARTIFACT_DIR = ".agents"
+# Agent artifacts, relative to <state dir>/artifacts/<task id>/. They are kept
+# outside the target repository: the target only ever receives code.
 ARTIFACTS = {
-    "architecture": f"{ARTIFACT_DIR}/openai/architecture.md",
-    ReviewKind.CODE: f"{ARTIFACT_DIR}/openai/review.md",
-    ReviewKind.SECURITY: f"{ARTIFACT_DIR}/openai/security.md",
-    ReviewKind.FINAL: f"{ARTIFACT_DIR}/openai/final-review.md",
-    "implementation": f"{ARTIFACT_DIR}/claude/implementation.md",
-    "tests": f"{ARTIFACT_DIR}/claude/test-results.md",
+    "architecture": "openai/architecture.md",
+    ReviewKind.CODE: "openai/review.md",
+    ReviewKind.SECURITY: "openai/security.md",
+    ReviewKind.FINAL: "openai/final-review.md",
+    "implementation": "claude/implementation.md",
+    "tests": "claude/test-results.md",
 }
 
 REVIEW_STATE = {
@@ -63,7 +64,8 @@ class Orchestrator:
                  implementer: Implementer, on_event: EventSink | None = None):
         self.root = workspace.resolve()
         self.cfg = config
-        self.state = StateManager(self.root)
+        self.state_root = resolve_state_dir(config, self.root)
+        self.state = StateManager(self.state_root)
         self.guard = Guardrails(config.guardrails, self.root, audit=self.state.audit)
         self.git = LocalGit(self.root, self.guard)
         self.ws = Workspace(self.root, self.guard)
@@ -161,7 +163,7 @@ class Orchestrator:
         spec = self.architect.design(task.request, self._repo_context(task.request))
         self._account(task, spec.usage, "openai")
         task.spec = {k: v for k, v in asdict(spec).items() if k != "usage"}
-        self.ws.write_file(ARTIFACTS["architecture"], spec.to_markdown())
+        self._write_artifact(task, "architecture", spec.to_markdown())
         self.state.record_decision(task, "architecture", task.spec)
         task.transition(TaskState.DESIGN_READY, spec.summary[:200])
 
@@ -190,7 +192,7 @@ class Orchestrator:
         if result.session_id:
             task.claude_session_id = result.session_id
         heading = f"Fix iteration {task.metrics.iterations}" if fixing else "Initial implementation"
-        self._append_artifact("implementation", f"## {heading}\n\n{result.summary}\n")
+        self._append_artifact(task, "implementation", f"## {heading}\n\n{result.summary}\n")
         if not result.ok:
             raise RuntimeError(f"implementation agent failed: {result.summary[:500]}")
         label = f"fix {task.metrics.iterations}" if fixing else "implement"
@@ -204,7 +206,7 @@ class Orchestrator:
         task.metrics.test_runs += 1
         results = [self.ws.run_check("tests", self.cfg.tests), self.ws.run_check("lint", self.cfg.lint)]
         report = "\n".join(r.to_markdown() for r in results)
-        self.ws.write_file(ARTIFACTS["tests"], f"# Test results (run {task.metrics.test_runs})\n\n{report}")
+        self._write_artifact(task, "tests", f"# Test results (run {task.metrics.test_runs})\n\n{report}")
         self.state.record_decision(task, "checks", {"results": [r.to_dict() for r in results]})
         failed = [r for r in results if not r.passed]
         if failed:
@@ -215,14 +217,14 @@ class Orchestrator:
 
     def _review(self, task: Task) -> None:
         kind = REVIEW_STATE[task.state]
-        diff = self.git.diff(task.base_branch, exclude=[ARTIFACT_DIR])
+        diff = self.git.diff(task.base_branch)
         if not diff.strip():
             self._to_fixing(task, "The change is empty: no code was modified relative to "
                                   f"{task.base_branch}. Implement the specification.", "empty diff")
             return
-        review = self.architect.review(kind, task.request, self._spec(task), diff, self._checks_summary())
+        review = self.architect.review(kind, task.request, self._spec(task), diff, self._checks_summary(task))
         self._account(task, review.usage, "openai")
-        self.ws.write_file(ARTIFACTS[kind], review.to_markdown())
+        self._write_artifact(task, kind, review.to_markdown())
         self.state.record_decision(task, f"{kind.value}-review", {
             "accepted": review.accepted, "summary": review.summary,
             "findings": [asdict(f) for f in review.findings]})
@@ -234,11 +236,13 @@ class Orchestrator:
         task.transition(self._next_gate(task.state), f"{kind.value} review accepted")
 
     def _commit(self, task: Task) -> None:
+        # Iteration commits already hold the code; this catches anything left in
+        # the tree (normally nothing, since artifacts live outside the repository).
         sha = self.git.commit_all(f"feat: {task.request}\n\nthemis-ai task {task.id}: "
                                   f"reviewed and approved by the orchestrated workflow.")
         if sha:
             task.commits.append(sha)
-        task.transition(TaskState.COMMITTED, sha or "no artifact changes")
+        task.transition(TaskState.COMMITTED, sha or f"approved at {self.git.head()[:12]}")
 
     def _deliver(self, task: Task) -> None:
         delivery = self.cfg.workflow.delivery
@@ -315,7 +319,9 @@ class Orchestrator:
     def _preflight(self) -> None:
         if not self.git.is_repo():
             raise PreflightError(f"{self.root} is not a git repository")
-        self.git.ensure_local_excludes()
+        if self.state_root == self.root or self.root in self.state_root.parents:
+            raise PreflightError(f"state directory {self.state_root} is inside the workspace; "
+                                 "set workflow.state_dir or CHOPIN_HOME outside it")
         if not self.git.is_clean():
             raise PreflightError("working tree has uncommitted changes; commit or stash them first")
         if not self.git.branch_exists(self.cfg.workflow.base_branch):
@@ -326,14 +332,15 @@ class Orchestrator:
             raise RuntimeError("task has no specification")
         return Spec(**task.spec)
 
-    def _checks_summary(self) -> str:
-        path = self.root / ARTIFACTS["tests"]
-        return path.read_text() if path.exists() else "(no checks recorded)"
+    def _checks_summary(self, task: Task) -> str:
+        return self.state.read_artifact(task.id, ARTIFACTS["tests"]) or "(no checks recorded)"
 
-    def _append_artifact(self, key: str, text: str) -> None:
-        path = self.root / ARTIFACTS[key]
-        prior = path.read_text() if path.exists() else "# Implementation log\n\n"
-        self.ws.write_file(ARTIFACTS[key], prior + text + "\n")
+    def _write_artifact(self, task: Task, key, text: str) -> None:
+        self.state.write_artifact(task.id, ARTIFACTS[key], text)
+
+    def _append_artifact(self, task: Task, key: str, text: str) -> None:
+        prior = self.state.read_artifact(task.id, ARTIFACTS[key]) or "# Implementation log\n\n"
+        self._write_artifact(task, key, prior + text + "\n")
 
     @staticmethod
     def _review_feedback(review: Review, blocking: list) -> str:
@@ -371,7 +378,7 @@ class Orchestrator:
         seen: set[str] = set()
         for pattern in self.cfg.workflow.context_globs:
             for f in self.ws.list_files(pattern):
-                if f in seen or f.startswith(ARTIFACT_DIR):
+                if f in seen:
                     continue
                 seen.add(f)
                 parts.append(f"### {f}\n\n{self.ws.read_file(f)}")
