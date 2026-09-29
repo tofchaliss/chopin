@@ -1,0 +1,21 @@
+# chopin target config for tofchaliss/themis. Lives in chopin, not in the target
+# repo: pass it with `themis-ai -c config/targets/themis.yaml -w /opt/themis ...`.
+# The orchestrator runs these checks itself, in the target checkout, on the
+# task's feature branch — agents never self-report test results.
+tests:
+  command: [make, test]          # go test ./... -count=1
+  timeout_seconds: 1200
+lint:
+  command: [make, vet-tags]      # type-check every build tag
+workflow:
+  base_branch: main
+  branch_prefix: agent/
+  max_iterations: 3
+  delivery: commit               # commit | merge (needs approval) | push (needs approval)
+  context_globs:
+    - README.md
+    - openspec/**/*.md
+    - docs/**/*.md
+    - go.mod
+themis:
+  base_url: http://localhost:8080/api/v1
