@@ -96,13 +96,13 @@ claude --version                 # Claude Code CLI, authenticated, on PATH
 ## Use
 
 ```bash
-cd /opt/themis                                   # clean checkout; .themis-ai.yaml is picked up
-themis-ai run "Implement KN-MODULE-4"            # drive the loop until done, a gate, or escalation
-themis-ai status                                 # state, iterations, cost, pending approval
-themis-ai approve -m "spec looks right"          # or: themis-ai reject -m "why"
-themis-ai resume -g "use the existing port in internal/port/outbound"
-themis-ai abort                                  # keep the branch, return to main
-themis-ai history
+export THEMIS_AI="themis-ai -c /opt/chopin/config/targets/themis.yaml -w /opt/themis"
+$THEMIS_AI run "Implement KN-MODULE-4"            # drive the loop until done, a gate, or escalation
+$THEMIS_AI status                                 # state, iterations, cost, pending approval
+$THEMIS_AI approve -m "spec looks right"          # or: themis-ai reject -m "why"
+$THEMIS_AI resume -g "use the existing port in internal/port/outbound"
+$THEMIS_AI abort                                  # keep the branch, return to main
+$THEMIS_AI history
 git diff main...agent/<branch>                   # review the result yourself
 ```
 
@@ -110,7 +110,9 @@ Exit codes: 0 completed · 10 awaiting approval · 11 escalated · 12 failed · 
 
 ## Configuration
 
-`<workspace>/.themis-ai.yaml` is merged over the defaults in
+Per-target configs live in this repo under [`config/targets/`](config/targets/) (e.g.
+[`themis.yaml`](config/targets/themis.yaml)) and are passed with `-c`, so target repos carry no
+orchestrator files. Without `-c`, `<workspace>/.themis-ai.yaml` is used if present. The config is merged over the defaults in
 [`src/themis_ai/config.py`](src/themis_ai/config.py). Unknown keys are rejected. See
 [`config/themis-ai.example.yaml`](config/themis-ai.example.yaml).
 `THEMIS_AI_OPENAI_MODEL` overrides the OpenAI model.
