@@ -15,7 +15,7 @@ def states(task):
     return [t.to_state for t in task.transitions]
 
 
-def test_happy_path_completes_on_feature_branch(build, repo):
+def test_happy_path_completes_on_feature_branch(build, repo, state_dir):
     orch, architect, impl = build()
     task = orch.start("Implement KN-MODULE-4")
 
@@ -26,24 +26,24 @@ def test_happy_path_completes_on_feature_branch(build, repo):
     assert (repo / "feature.txt").read_text() == "done\n"
     # main is untouched; work lives on the branch
     assert git(repo, "show", "main:feature.txt") == "todo\n"
-    # artifacts are committed for audit, runtime state is not
-    tracked = git(repo, "ls-files").split()
-    assert ".agents/openai/architecture.md" in tracked
-    assert ".agents/openai/final-review.md" in tracked
-    assert ".agents/claude/test-results.md" in tracked
-    assert not any(f.startswith("agent-state/") for f in tracked)
+    # the target repository only ever receives code: no artifacts, no state
+    assert git(repo, "ls-files").split() == ["README.md", "feature.txt"]
     assert git(repo, "status", "--porcelain") == ""
-    # reviewers never see the agents' own artifacts as code changes
-    assert all(".agents/" not in d for _, d in architect.diffs)
+    assert not (repo / ".agents").exists() and not (repo / "agent-state").exists()
+    # artifacts live in the state directory, per task
+    artifacts = state_dir / "artifacts" / task.id
+    for rel in ("openai/architecture.md", "openai/final-review.md", "claude/test-results.md",
+                "claude/implementation.md"):
+        assert (artifacts / rel).exists(), rel
     assert "feature.txt" in architect.diffs[0][1]
     # the architect was grounded with the repository hit for the requested ID
     assert "KN-MODULE-4 lives in internal/kn" in architect.contexts[0]
     # persisted state and metrics
-    saved = json.loads((repo / "agent-state" / "tasks" / f"{task.id}.json").read_text())
+    saved = json.loads((state_dir / "tasks" / f"{task.id}.json").read_text())
     assert saved["state"] == "COMPLETED"
     assert task.metrics.claude_cost_usd == 0.5
     assert task.metrics.openai_input_tokens == 100 + 3 * 10
-    assert (repo / "agent-state" / "audit.log").exists()
+    assert (state_dir / "audit.log").exists()
 
 
 def test_test_failure_loops_through_fixing(build):
@@ -100,7 +100,7 @@ def test_escalates_when_iteration_budget_exhausted_then_resumes(build, config):
     assert "Guidance from the owner" in impl.calls[3]["feedback"]
 
 
-def test_merge_delivery_requires_approval(build, repo, config):
+def test_merge_delivery_requires_approval(build, repo, config, state_dir):
     config.workflow.delivery = "merge"
     orch, _, _ = build()
     task = orch.start("Implement it")
@@ -112,7 +112,7 @@ def test_merge_delivery_requires_approval(build, repo, config):
     task = orch.decide(task.id, True, comment="lgtm")
     assert task.state is TaskState.COMPLETED
     assert git(repo, "show", "main:feature.txt") == "done\n"
-    decisions = list((repo / "agent-state" / "decisions" / task.id).glob("*-human-approval.json"))
+    decisions = list((state_dir / "decisions" / task.id).glob("*-human-approval.json"))
     assert decisions
 
 
@@ -186,3 +186,10 @@ def test_abort_returns_to_base(build, repo, config):
     assert task.state is TaskState.ABORTED
     assert git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip() == "main"
     assert task.branch in git(repo, "branch")
+
+
+def test_preflight_rejects_state_dir_inside_workspace(build, repo, config):
+    config.workflow.state_dir = str(repo / "agent-state")
+    orch, _, _ = build()
+    with pytest.raises(PreflightError, match="inside the workspace"):
+        orch.start("Implement it")

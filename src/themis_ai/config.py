@@ -1,8 +1,13 @@
 """Runtime configuration.
 
-Configuration is loaded from ``<workspace>/.themis-ai.yaml`` (if present) and
-merged over the defaults below. Every field has a safe default so the runtime
-can operate on a repository that has not been prepared for it.
+Configuration is loaded from the file passed with ``-c`` (chopin keeps one per
+target under ``config/targets/``), else from ``<workspace>/.themis-ai.yaml`` if
+present, and merged over the defaults below. Every field has a safe default so
+the runtime can operate on a repository that has not been prepared for it.
+
+Runtime state and agent artifacts live OUTSIDE the target repository, in the
+state directory (see :func:`resolve_state_dir`), so a target such as Themis
+never carries orchestrator files.
 """
 
 from __future__ import annotations
@@ -15,6 +20,7 @@ from typing import Any
 import yaml
 
 CONFIG_FILENAME = ".themis-ai.yaml"
+STATE_HOME_ENV = "CHOPIN_HOME"
 
 
 @dataclass
@@ -47,6 +53,8 @@ class ClaudeConfig:
             "Read", "Edit", "Write", "Glob", "Grep",
             "Bash(go build:*)", "Bash(go test:*)", "Bash(go vet:*)", "Bash(gofmt:*)",
             "Bash(make test:*)", "Bash(make lint:*)", "Bash(make build:*)",
+            "Bash(make check:*)", "Bash(make vet-tags:*)", "Bash(make test-integration:*)",
+            "Bash(make clean-arch:*)", "Bash(make arch-test:*)", "Bash(make coverage:*)",
             "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)",
             "Bash(ls:*)", "Bash(cat:*)",
         ]
@@ -100,6 +108,10 @@ class WorkflowConfig:
     #   push   - also push the feature branch to the remote (approval required)
     delivery: str = "commit"
     remote: str = "origin"
+    # Where task state, the audit log and agent artifacts are kept. Must be
+    # outside the workspace. Empty: $CHOPIN_HOME/<workspace name>, else
+    # ~/.chopin/<workspace name>.
+    state_dir: str = ""
     # Repository files given to the architect as context (globs, in order).
     context_globs: list[str] = field(
         default_factory=lambda: [
@@ -140,9 +152,23 @@ class GuardrailConfig:
 
 @dataclass
 class ThemisConfig:
-    """Read-only access to a running Themis instance (MCP domain tools)."""
+    """Read-only access to a running Themis (greenfield) stack for the MCP domain tools.
 
-    base_url: str = "http://localhost:8080/api/v1"
+    One base URL per bounded-context service; defaults are the local ports.
+    """
+
+    services: dict[str, str] = field(
+        default_factory=lambda: {
+            "evidence": "http://localhost:8081/api/v1",
+            "registry": "http://localhost:8082/api/v1",
+            "governance": "http://localhost:8083/api/v1",
+            "communication": "http://localhost:8084/api/v1",
+            "knowledge": "http://localhost:8085/api/v1",
+            "intelligence": "http://localhost:8086/api/v1",
+        }
+    )
+    # Environment variable holding a Themis API key, sent as X-API-Key.
+    # Unset means no key is sent (nodes running with auth disabled).
     api_key_env: str = "THEMIS_API_KEY"
     timeout_seconds: int = 30
 
@@ -159,6 +185,9 @@ class RuntimeConfig:
 
     @classmethod
     def load(cls, workspace: Path, path: Path | None = None) -> "RuntimeConfig":
+        if path is not None and not path.exists():
+            # An explicit config that is missing must not silently fall back to defaults.
+            raise FileNotFoundError(f"config file not found: {path}")
         cfg_path = path or (workspace / CONFIG_FILENAME)
         data: dict[str, Any] = {}
         if cfg_path.exists():
@@ -180,6 +209,19 @@ def _merge(obj: Any, data: dict[str, Any]) -> Any:
             if not isinstance(value, dict):
                 raise ValueError(f"config key {key} must be a mapping")
             _merge(current, value)
+        elif isinstance(current, dict):
+            if not isinstance(value, dict):
+                raise ValueError(f"config key {key} must be a mapping")
+            current.update(value)
         else:
             setattr(obj, key, value)
     return obj
+
+
+def resolve_state_dir(cfg: RuntimeConfig, workspace: Path) -> Path:
+    """State directory for a workspace: config, then $CHOPIN_HOME, then ~/.chopin."""
+    if cfg.workflow.state_dir:
+        return Path(cfg.workflow.state_dir).expanduser().resolve()
+    home = os.environ.get(STATE_HOME_ENV)
+    base = Path(home).expanduser() if home else Path.home() / ".chopin"
+    return (base / workspace.resolve().name).resolve()

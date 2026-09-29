@@ -11,10 +11,6 @@ from pathlib import Path
 
 from .guardrails import Guardrails
 
-# Paths that belong to the runtime and never enter a commit or a review diff.
-LOCAL_EXCLUDES = ["agent-state/"]
-
-
 class GitError(RuntimeError):
     pass
 
@@ -63,16 +59,6 @@ class LocalGit:
         return self._git("log", f"-{n}", "--oneline", "--decorate")
 
     # -- write -------------------------------------------------------------
-    def ensure_local_excludes(self) -> None:
-        exclude = self.workspace / ".git" / "info" / "exclude"
-        exclude.parent.mkdir(parents=True, exist_ok=True)
-        existing = exclude.read_text() if exclude.exists() else ""
-        missing = [p for p in LOCAL_EXCLUDES if p not in existing.splitlines()]
-        if missing:
-            with exclude.open("a") as f:
-                f.write(("\n" if existing and not existing.endswith("\n") else "")
-                        + "# themis-ai runtime state\n" + "\n".join(missing) + "\n")
-
     def create_branch(self, name: str, base: str) -> None:
         self.guard.enforce("git_branch")
         self._git("checkout", "-b", name, base)

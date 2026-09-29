@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -9,7 +10,7 @@ import pytest
 from themis_ai.agents.base import ReviewKind
 from themis_ai.agents.claude_code import ClaudeCodeImplementer
 from themis_ai.agents.openai_agent import OpenAIArchitectReviewer
-from themis_ai.config import ClaudeConfig, GuardrailConfig, OpenAIConfig, RuntimeConfig
+from themis_ai.config import ClaudeConfig, GuardrailConfig, OpenAIConfig, RuntimeConfig, resolve_state_dir
 from themis_ai.guardrails import ApprovalRequired, Decision, GuardrailViolation, Guardrails
 from themis_ai.mcp_server import Toolset
 from themis_ai.state import InvalidTransition, StateManager, Task, TaskState
@@ -146,8 +147,8 @@ def test_openai_design_and_review():
 
 
 # -- MCP toolset ----------------------------------------------------------------
-def test_mcp_toolset_is_policy_checked(repo):
-    tools = Toolset(repo, RuntimeConfig())
+def test_mcp_toolset_is_policy_checked(repo, config, state_dir):
+    tools = Toolset(repo, config)
     assert "KN-MODULE-4" in tools.read_file("README.md")
     assert any("README.md" in hit for hit in tools.search_code("KN-MODULE-4"))
     tools.write_file("internal/kn/x.go", "package kn\n")
@@ -155,5 +156,86 @@ def test_mcp_toolset_is_policy_checked(repo):
         tools.write_file(".env", "SECRET=1")
     with pytest.raises(GuardrailViolation):
         tools.read_file("../../etc/passwd")
-    audit = (repo / "agent-state" / "audit.log").read_text().splitlines()
+    audit = (state_dir / "audit.log").read_text().splitlines()
     assert any('"actor": "mcp"' in line and '"deny"' in line for line in audit)
+    assert not (repo / "agent-state").exists()
+
+
+def test_mcp_themis_tools_route_to_greenfield_services(repo, config, monkeypatch):
+    seen = []
+
+    class Resp:
+        def __init__(self, body):
+            self.body = body
+
+        def read(self):
+            return self.body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout):
+        seen.append((req.full_url, req.get_header("X-api-key")))
+        return Resp(b'{"ok": true}')
+
+    monkeypatch.setattr("themis_ai.mcp_server.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setenv("THEMIS_API_KEY", "k-123")
+    config.themis.services["knowledge"] = "http://kn.example:9000/api/v1"
+    tools = Toolset(repo, config)
+
+    assert tools.get_release("r/1") == {"ok": True}
+    tools.list_findings(release_id="r1")
+    tools.find_vulnerability("CVE-2024-1234")
+    tools.get_sbom_inventory("e1")
+    assert seen == [
+        ("http://localhost:8082/api/v1/releases/r%2F1", "k-123"),
+        ("http://localhost:8083/api/v1/findings?release=r1", "k-123"),
+        ("http://kn.example:9000/api/v1/faultlines?cve=CVE-2024-1234", "k-123"),
+        ("http://localhost:8081/api/v1/evidence/e1/inventory", "k-123"),
+    ]
+    config.themis.services.pop("governance")
+    with pytest.raises(ValueError, match="governance"):
+        tools.get_finding("f1")
+
+
+def test_state_dir_resolution(tmp_path, monkeypatch):
+    ws = tmp_path / "themis"
+    cfg = RuntimeConfig()
+    monkeypatch.setenv("CHOPIN_HOME", str(tmp_path / "home"))
+    assert resolve_state_dir(cfg, ws) == (tmp_path / "home" / "themis").resolve()
+    monkeypatch.delenv("CHOPIN_HOME")
+    assert resolve_state_dir(cfg, ws) == (Path.home() / ".chopin" / "themis").resolve()
+    cfg.workflow.state_dir = str(tmp_path / "explicit")
+    assert resolve_state_dir(cfg, ws) == (tmp_path / "explicit").resolve()
+
+
+def test_config_explicit_path_and_service_merge(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        RuntimeConfig.load(tmp_path, tmp_path / "missing.yaml")
+    target = tmp_path / "themis.yaml"
+    target.write_text("themis:\n  services:\n    registry: http://reg:1/api/v1\n")
+    cfg = RuntimeConfig.load(tmp_path, target)
+    assert cfg.themis.services["registry"] == "http://reg:1/api/v1"
+    assert cfg.themis.services["governance"] == "http://localhost:8083/api/v1"
+
+
+def test_shipped_themis_target_config_loads(tmp_path):
+    target = Path(__file__).resolve().parent.parent / "config" / "targets" / "themis.yaml"
+    cfg = RuntimeConfig.load(tmp_path, target)
+    assert cfg.tests.command == ["make", "check"]
+    assert "CLAUDE.md" in cfg.workflow.context_globs
+    assert cfg.themis.services["knowledge"].endswith(":8085/api/v1")
+
+
+def test_claude_runner_strips_nested_session_marker(tmp_path, monkeypatch):
+    from themis_ai.agents import claude_code
+
+    seen = {}
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setattr(claude_code.subprocess, "run",
+                        lambda cmd, **kw: seen.update(kw) or subprocess.CompletedProcess(cmd, 0, "", ""))
+    claude_code._default_runner(["claude"], tmp_path, 5)
+    assert "CLAUDECODE" not in seen["env"]

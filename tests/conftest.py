@@ -77,8 +77,14 @@ class FakeImplementer:
 
 
 @pytest.fixture
-def config() -> RuntimeConfig:
+def state_dir(tmp_path: Path) -> Path:
+    return tmp_path / "chopin-state"
+
+
+@pytest.fixture
+def config(state_dir) -> RuntimeConfig:
     cfg = RuntimeConfig()
+    cfg.workflow.state_dir = str(state_dir)
     cfg.tests = CheckConfig(command=[
         sys.executable, "-c",
         "import pathlib,sys; sys.exit(0 if pathlib.Path('feature.txt').read_text().strip()=='done' else 1)",

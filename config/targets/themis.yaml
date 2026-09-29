@@ -1,21 +1,47 @@
 # chopin target config for tofchaliss/themis. Lives in chopin, not in the target
-# repo: pass it with `themis-ai -c config/targets/themis.yaml -w /opt/themis ...`.
+# repo: pass it with `themis-ai -c config/targets/themis.yaml -w ~/src/themis ...`.
 # The orchestrator runs these checks itself, in the target checkout, on the
 # task's feature branch — agents never self-report test results.
 tests:
-  command: [make, test]          # go test ./... -count=1
-  timeout_seconds: 1200
+  # Themis's quality gate: build · vet-tags · test · lint · clean-arch ·
+  # arch-test · coverage (pulls in integration tests) · deadcode.
+  command: [make, check]
+  timeout_seconds: 3600
 lint:
-  command: [make, vet-tags]      # type-check every build tag
+  # Covered by `make check`; no separate lint step.
+  command: []
+openai:
+  # Room for CLAUDE.md, PHASE3-STATUS, STACK, CONVENTIONS and the active
+  # OpenSpec changes (~300k characters, ~80k tokens).
+  context_budget_chars: 350000
 workflow:
   base_branch: main
   branch_prefix: agent/
   max_iterations: 3
+  # Work-in-progress commits on agent/* branches are made BEFORE the gate
+  # passes (owner decision, 2026-09-29); only the reviewed result must pass
+  # `make check`. The branch is never merged by chopin without approval.
   delivery: commit               # commit | merge (needs approval) | push (needs approval)
+  # Task state and agent artifacts: outside the checkout. Empty = ~/.chopin/themis.
+  state_dir: ""
+  # Architect context, in priority order (truncated at context_budget_chars).
   context_globs:
+    - CLAUDE.md
+    - docs/engineering/STACK.md
+    - docs/engineering/CONVENTIONS.md
+    - openspec/changes/phase3-*/proposal.md
+    - openspec/changes/phase3-*/design.md
+    - openspec/changes/phase3-*/tasks.md
+    - docs/engineering/PHASE3-STATUS.md
     - README.md
-    - openspec/**/*.md
-    - docs/**/*.md
     - go.mod
 themis:
-  base_url: http://localhost:8080/api/v1
+  # Local greenfield stack (see themis CLAUDE.md "Running the greenfield stack").
+  # API key, if the nodes run with auth: export THEMIS_API_KEY.
+  services:
+    evidence: http://localhost:8081/api/v1
+    registry: http://localhost:8082/api/v1
+    governance: http://localhost:8083/api/v1
+    communication: http://localhost:8084/api/v1
+    knowledge: http://localhost:8085/api/v1
+    intelligence: http://localhost:8086/api/v1

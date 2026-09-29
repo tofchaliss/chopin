@@ -1,13 +1,15 @@
 """Explicit task state machine and persistent state manager.
 
 The orchestrator never relies on conversation history to know where a task is.
-Everything it needs to resume is in ``<workspace>/agent-state/``:
+Everything it needs to resume is in the state directory, which lives OUTSIDE
+the target repository (default ``~/.chopin/<workspace name>/``):
 
-    agent-state/
+    <state dir>/
     ├── current-task.json      id of the active task
     ├── task-history.json      one summary row per task
     ├── tasks/<id>.json        full task record (state, transitions, metrics)
     ├── decisions/<id>/        every review verdict and human decision
+    ├── artifacts/<id>/        agent artifacts (openai/*.md, claude/*.md)
     └── audit.log              JSONL audit trail of every guarded action
 """
 
@@ -175,13 +177,14 @@ class Task:
 
 
 class StateManager:
-    def __init__(self, workspace: Path):
-        self.root = workspace / "agent-state"
+    def __init__(self, root: Path):
+        self.root = root
         self.tasks_dir = self.root / "tasks"
         self.decisions_dir = self.root / "decisions"
         self.current_file = self.root / "current-task.json"
         self.history_file = self.root / "task-history.json"
         self.audit_file = self.root / "audit.log"
+        self.artifacts_dir = self.root / "artifacts"
 
     def init(self) -> None:
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
@@ -227,6 +230,19 @@ class StateManager:
         path = d / f"{n:03d}-{kind}.json"
         _atomic_write(path, {"at": _now(), "kind": kind, "state": task.state.value, **payload})
         return path
+
+    def artifact_path(self, task_id: str, rel: str) -> Path:
+        return self.artifacts_dir / task_id / rel
+
+    def write_artifact(self, task_id: str, rel: str, text: str) -> Path:
+        path = self.artifact_path(task_id, rel)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return path
+
+    def read_artifact(self, task_id: str, rel: str) -> str | None:
+        path = self.artifact_path(task_id, rel)
+        return path.read_text() if path.exists() else None
 
     def audit(self, event: dict[str, Any]) -> None:
         self.init()

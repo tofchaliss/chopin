@@ -17,12 +17,13 @@ specialist agents only when real work needs them.
 
 | What | Where |
 |---|---|
-| The code the agents write | The checkout you pass as `--workspace` (for example `/opt/themis`), on a new local branch `agent/<slug>-<id>` created from `main` |
+| Where chopin runs | Your laptop (for example a MacBook), from a terminal or a Claude Code session. It needs no local model: OpenAI and Claude Code are called over their APIs. |
+| The code the agents write | The checkout you pass as `--workspace` (for example `~/src/themis`, a clone used only by chopin), on a new local branch `agent/<slug>-<id>` created from `main` |
 | Who edits it | Claude Code edits the working tree. It cannot commit, push, merge, reset or reach the network. |
-| Who commits it | The orchestrator. It commits each iteration to the feature branch, so every step can be diffed and rolled back. |
-| Where tests run | The same checkout, on the feature branch, on your server. The orchestrator runs the configured command (Themis: `make test`, which is `go test ./... -count=1`) itself and never trusts an agent's claim that tests passed. |
-| Agent artifacts | `.agents/openai/{architecture,review,security,final-review}.md` and `.agents/claude/{implementation,test-results}.md`, committed with the code |
-| Runtime state | `agent-state/` (task records, decisions, audit log), git-excluded and never committed |
+| Who commits it | The orchestrator. It commits each iteration to the feature branch, so every step can be diffed and rolled back. These work-in-progress commits are made before the gate passes; only the reviewed result must pass it. |
+| Where tests run | The same checkout, on the feature branch, on your laptop. The orchestrator runs the configured command (Themis: `make check`, its full quality gate) itself and never trusts an agent's claim that tests passed. |
+| Agent artifacts | `<state dir>/artifacts/<task>/openai/{architecture,review,security,final-review}.md` and `.../claude/{implementation,test-results}.md` |
+| Runtime state | `<state dir>/` (task records, decisions, audit log). The state dir is `~/.chopin/<workspace name>` by default (`CHOPIN_HOME` or `workflow.state_dir` to move it) and must be outside the checkout. **The target repository only ever receives code.** |
 | `main` / GitHub | Unchanged unless `delivery: merge` or `delivery: push` is set **and** you approve |
 
 ## Architecture
@@ -33,7 +34,7 @@ specialist agents only when real work needs them.
   ▼
 ┌──────────────────────── ORCHESTRATOR (themis_ai.orchestrator) ─────────────────────┐
 │ Task planner → Agent router → Workflow engine (explicit state machine)             │
-│ State manager (agent-state/)          Guardrails & approval (themis_ai.guardrails) │
+│ State manager (~/.chopin/<target>/)   Guardrails & approval (themis_ai.guardrails) │
 └───────────────┬─────────────────────────────────────────────┬──────────────────────┘
                 ▼                                             ▼
    OpenAI (agents/openai_agent.py)                Claude Code (agents/claude_code.py)
@@ -81,26 +82,36 @@ control states: AWAITING_APPROVAL · ESCALATED · FAILED · REJECTED · ABORTED
 |---|---|---|
 | read / write / search files, run tests and lint, git status/diff/log, create branch, commit on the feature branch, read the Themis API | push, merge, delete branch or data, deploy, modify credentials or infrastructure, design approval, **any unknown action** | force-push, `reset --hard`, history rewrite; writes to `.git/`, `.env*`, `*.pem`, `*.key`, `secrets/`, `credentials*`, `agent-state/`, `.themis-ai.yaml`, or anywhere outside the workspace |
 
-Every decision is appended to `agent-state/audit.log` (JSONL). Every review verdict and human
-decision is saved under `agent-state/decisions/<task>/`.
+Every decision is appended to `<state dir>/audit.log` (JSONL). Every review verdict and human
+decision is saved under `<state dir>/decisions/<task>/`.
 
 ## Install
 
+On the laptop that runs chopin (macOS or Linux):
+
 ```bash
-python3 -m venv .venv && . .venv/bin/activate
+git clone https://github.com/tofchaliss/chopin ~/src/chopin
+git clone https://github.com/tofchaliss/themis ~/src/themis   # a clone used only by chopin
+cd ~/src/chopin
+python3 -m venv .venv && . .venv/bin/activate    # Python 3.11+
 pip install -e '.[all]'          # openai + mcp extras
-export OPENAI_API_KEY=...        # architecture/review side
+export OPENAI_API_KEY=...        # OpenAI platform API key (billing enabled)
 claude --version                 # Claude Code CLI, authenticated, on PATH
 ```
+
+The Themis checkout also needs what `make check` needs: Go 1.25 and the linters its Makefile
+calls. chopin can be started from inside a Claude Code session; the nested `claude -p` it
+spawns is started without the parent session's `CLAUDECODE` marker. On a Mac, prefix long runs
+with `caffeinate -i` so the machine does not sleep mid-task (a stopped task can be resumed).
 
 ## Use
 
 ```bash
-export THEMIS_AI="themis-ai -c /opt/chopin/config/targets/themis.yaml -w /opt/themis"
+export THEMIS_AI="themis-ai -c $HOME/src/chopin/config/targets/themis.yaml -w $HOME/src/themis"
 $THEMIS_AI run "Implement KN-MODULE-4"            # drive the loop until done, a gate, or escalation
 $THEMIS_AI status                                 # state, iterations, cost, pending approval
 $THEMIS_AI approve -m "spec looks right"          # or: themis-ai reject -m "why"
-$THEMIS_AI resume -g "use the existing port in internal/port/outbound"
+$THEMIS_AI resume -g "keep the change inside internal/knowledge"
 $THEMIS_AI abort                                  # keep the branch, return to main
 $THEMIS_AI history
 git diff main...agent/<branch>                   # review the result yourself
@@ -120,13 +131,21 @@ orchestrator files. Without `-c`, `<workspace>/.themis-ai.yaml` is used if prese
 ## MCP server
 
 ```bash
-themis-ai-mcp --workspace /opt/themis            # stdio
+themis-ai-mcp -c config/targets/themis.yaml --workspace ~/src/themis   # stdio
 ```
 
 Tools: `read_file`, `write_file`, `list_files`, `search_code`, `run_tests`, `run_lint`,
-`git_status`, `git_diff`, `git_log`, `task_status`, plus read-only Themis domain tools:
-`list_products`, `get_product`, `get_scan`, `list_components`, `get_notification_rules`.
-These call `THEMIS_API_KEY` against `themis.base_url`. Git writes are not exposed; only the
+`git_status`, `git_diff`, `git_log`, `task_status`, plus read-only tools over a running Themis
+greenfield stack, one URL per service (`themis.services`, default `localhost:8081–8086`):
+
+| Service | Tools |
+|---|---|
+| Registry | `list_products`, `list_projects`, `list_releases`, `get_release`, `get_blast_radius` |
+| Evidence | `list_evidence`, `get_sbom_inventory` |
+| Knowledge | `find_vulnerability` (by CVE), `get_faultline`, `feed_health` |
+| Governance | `list_findings`, `get_finding`, `get_finding_assessment`, `get_release_posture` |
+
+`THEMIS_API_KEY`, when set, is sent as `X-API-Key`. Git writes are not exposed; only the
 orchestrator writes history. To give Claude Code these tools during a task, set
 `claude.mcp_config` to a file like [`config/claude-mcp.example.json`](config/claude-mcp.example.json).
 
@@ -139,11 +158,14 @@ pip install -e '.[all,dev]' && pytest
 The tests use fake agents against real temporary Git repositories. They cover the happy path,
 test-failure and review-rejection loops, severity overrides, escalation and resume, merge
 approval and rejection, the design gate, failure and retry, empty diffs, preflight, abort, the
-guardrail policy, both agent adapters, and the MCP toolset.
+guardrail policy, both agent adapters, the MCP toolset and its Themis service routing, the state
+directory staying outside the checkout, and that the shipped Themis target config loads.
 
 ## Roadmap (add only when a real need appears)
 
 - Separate model or configuration per review role; specialist agents (documentation, maintenance)
-- More Themis domain tools (vulnerabilities, findings, SBOM export) as the API grows
+- A local, OpenAI-compatible model for the architecture/review side
+- Deterministic security tools as checks (govulncheck, gosec) alongside the security review
+- More Themis domain tools as the API grows
 - Parallel tasks on git worktrees
 - GitHub delivery: open a PR and follow its CI
