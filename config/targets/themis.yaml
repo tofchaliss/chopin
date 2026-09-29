@@ -2,6 +2,10 @@
 # repo: pass it with `themis-ai -c config/targets/themis.yaml -w ~/src/themis ...`.
 # The orchestrator runs these checks itself, in the target checkout, on the
 # task's feature branch — agents never self-report test results.
+target:
+  name: themis
+  # Architecture rules appended to every OpenAI role (architect + reviewers).
+  notes_file: themis.md
 tests:
   # Themis's quality gate: build · vet-tags · test · lint · clean-arch ·
   # arch-test · coverage (pulls in integration tests) · deadcode.

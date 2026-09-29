@@ -1,6 +1,7 @@
 # chopin
 
-Autonomous multi-agent runtime for [Themis](https://github.com/tofchaliss/themis).
+Autonomous multi-agent runtime that develops [Themis](https://github.com/tofchaliss/themis) and
+its AI Harness, [themis-ai-runtime](https://github.com/tofchaliss/themis-ai-runtime).
 
 **OpenAI** handles architecture and independent review. **Claude Code** handles implementation.
 An **orchestrator** controls the loop between them, working on a **local Git** checkout and
@@ -91,7 +92,8 @@ On the laptop that runs chopin (macOS or Linux):
 
 ```bash
 git clone https://github.com/tofchaliss/chopin ~/src/chopin
-git clone https://github.com/tofchaliss/themis ~/src/themis   # a clone used only by chopin
+git clone https://github.com/tofchaliss/themis ~/src/themis                        # clones used only by chopin
+git clone https://github.com/tofchaliss/themis-ai-runtime ~/src/themis-ai-runtime
 cd ~/src/chopin
 python3 -m venv .venv && . .venv/bin/activate    # Python 3.11+
 pip install -e '.[all]'          # openai + mcp extras
@@ -100,7 +102,7 @@ claude --version                 # Claude Code CLI, authenticated, on PATH
 ```
 
 The Themis checkout also needs what `make check` needs: Go 1.25 and the linters its Makefile
-calls. chopin can be started from inside a Claude Code session; the nested `claude -p` it
+calls. The Harness needs Go 1.24+. chopin can be started from inside a Claude Code session; the nested `claude -p` it
 spawns is started without the parent session's `CLAUDECODE` marker. On a Mac, prefix long runs
 with `caffeinate -i` so the machine does not sleep mid-task (a stopped task can be resumed).
 
@@ -119,11 +121,25 @@ git diff main...agent/<branch>                   # review the result yourself
 
 Exit codes: 0 completed · 10 awaiting approval · 11 escalated · 12 failed · 13 rejected · 14 aborted.
 
+For the Harness, use its target config and checkout instead:
+`themis-ai -c $HOME/src/chopin/config/targets/themis-ai-runtime.yaml -w $HOME/src/themis-ai-runtime`.
+One task changes one repository; a change that spans both is two linked tasks.
+
+## Targets
+
+| Target | Config | Architecture notes | Gate | Design approval |
+|---|---|---|---|---|
+| Themis | [`themis.yaml`](config/targets/themis.yaml) | [`themis.md`](config/targets/themis.md): greenfield layout, frozen legacy tree, ADR/EDR/OpenSpec, invariants | `make check` | when the architect has open questions |
+| AI Harness | [`themis-ai-runtime.yaml`](config/targets/themis-ai-runtime.yaml) | [`themis-ai-runtime.md`](config/targets/themis-ai-runtime.md): ownership, 11 layers, G1/G2, DAY-0, change classes | gofmt · vet · test · build over `src/harness` (as CI) | **every task** (DAY-0) |
+
+The prompts are target-neutral; a target's notes file is appended to every OpenAI role
+(architect and all reviewers) as the authoritative rules for that repository. Claude Code reads
+the target's own `CLAUDE.md`.
+
 ## Configuration
 
-Per-target configs live in this repo under [`config/targets/`](config/targets/) (e.g.
-[`themis.yaml`](config/targets/themis.yaml)) and are passed with `-c`, so target repos carry no
-orchestrator files. Without `-c`, `<workspace>/.themis-ai.yaml` is used if present. The config is merged over the defaults in
+Per-target configs live in this repo under [`config/targets/`](config/targets/) and are passed
+with `-c`, so target repos carry no orchestrator files. Without `-c`, `<workspace>/.themis-ai.yaml` is used if present. The config is merged over the defaults in
 [`src/themis_ai/config.py`](src/themis_ai/config.py). Unknown keys are rejected. See
 [`config/themis-ai.example.yaml`](config/themis-ai.example.yaml).
 `THEMIS_AI_OPENAI_MODEL` overrides the OpenAI model.

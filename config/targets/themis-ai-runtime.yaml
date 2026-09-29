@@ -1,0 +1,68 @@
+# chopin target config for tofchaliss/themis-ai-runtime (the Themis AI Harness).
+# Lives in chopin, not in the target repo: pass it with
+#   themis-ai -c config/targets/themis-ai-runtime.yaml -w ~/src/themis-ai-runtime ...
+# The orchestrator runs these checks itself, in the target checkout, on the
+# task's feature branch — agents never self-report test results.
+target:
+  name: themis-ai-runtime
+  # Architecture rules appended to every OpenAI role (architect + reviewers).
+  notes_file: themis-ai-runtime.md
+tests:
+  # Mirrors the repository's CI (.github/workflows/ci.yml), run from the repo
+  # root through go.work: gofmt clean, vet, test, build.
+  command:
+    - sh
+    - -c
+    - >-
+      out=$(gofmt -l src/harness);
+      if [ -n "$out" ]; then echo "gofmt needed:"; echo "$out"; exit 1; fi;
+      go vet ./src/harness/... && go test ./src/harness/... && go build ./src/harness/...
+  timeout_seconds: 1800
+lint:
+  # Covered by the test command above.
+  command: []
+openai:
+  context_budget_chars: 250000
+workflow:
+  base_branch: main
+  branch_prefix: agent/
+  max_iterations: 3
+  # Owner decision (2026-09-29): every Harness design waits for the owner's
+  # approve/reject before any code is written — DAY-0 requires explicit
+  # approval for ownership, authority, trust-boundary, topology and
+  # model-architecture changes, and the architect alone must not judge that.
+  require_design_approval: true
+  # Work-in-progress commits on agent/* branches are made before the gate
+  # passes; only the reviewed result must pass it. Shared-remote pushes need
+  # the owner's approval (and the repo's THEMIS_PUSH_APPROVED marker), so
+  # delivery stays local.
+  delivery: commit
+  # Task state and agent artifacts: outside the checkout. Empty = ~/.chopin/themis-ai-runtime.
+  state_dir: ""
+  # Architect context, in priority order (truncated at context_budget_chars).
+  context_globs:
+    - CLAUDE.md
+    - ARCHITECTURE.md
+    - .claude/policy/DAY-0.md
+    - .claude/skills/themis-harness-engineering/SKILL.md
+    - AGENTS.md
+    - CONTEXT-MAP.md
+    - src/harness/CONTEXT.md
+    - openspec/changes/outward-actions/*.md
+    - openspec/changes/two-vm-topology/*.md
+    - openspec/changes/archive/2026-09-27-themis-integration/completion-matrix.md
+    - docs/architecture/harness/execution-chain.md
+    - docs/harness-architecture-code-map.md
+    - docs/harness-layer-status.md
+    - README.md
+    - src/harness/go.mod
+themis:
+  # The Harness integrates with a running Themis; the same read-only MCP tools
+  # can inspect a local greenfield stack.
+  services:
+    evidence: http://localhost:8081/api/v1
+    registry: http://localhost:8082/api/v1
+    governance: http://localhost:8083/api/v1
+    communication: http://localhost:8084/api/v1
+    knowledge: http://localhost:8085/api/v1
+    intelligence: http://localhost:8086/api/v1

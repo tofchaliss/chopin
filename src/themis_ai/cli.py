@@ -38,7 +38,7 @@ def build_orchestrator(workspace: Path, config_path: Path | None) -> Orchestrato
     mcp = Path(cfg.claude.mcp_config) if cfg.claude.mcp_config else None
     return Orchestrator(
         workspace, cfg,
-        architect=OpenAIArchitectReviewer(cfg.openai),
+        architect=OpenAIArchitectReviewer(cfg.openai, target_notes=cfg.target.notes()),
         implementer=ClaudeCodeImplementer(cfg.claude, workspace, mcp_config=mcp),
         on_event=lambda msg, task: print(f"[{task.id}] {msg}", file=sys.stderr, flush=True),
     )

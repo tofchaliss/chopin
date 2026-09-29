@@ -7,13 +7,14 @@ Both paths pass through the same guardrails.
 
 from __future__ import annotations
 
+import fnmatch
 import subprocess
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .config import CheckConfig
-from .guardrails import Guardrails, match_path
+from .guardrails import Guardrails
 
 MAX_READ_BYTES = 512_000
 
@@ -38,6 +39,16 @@ class CheckResult:
         return (f"### {self.name}: {status}\n\n"
                 f"- command: `{' '.join(self.command)}`\n- exit code: {self.exit_code}\n"
                 f"- duration: {self.duration_seconds:.1f}s\n\n```\n{self.output_tail}\n```\n")
+
+
+def glob_match(rel: str, pattern: str) -> bool:
+    """Match a repository-relative path against a glob anchored at the root.
+
+    ``README.md`` names only the root file; ``**/README.md`` names every one.
+    """
+    if fnmatch.fnmatchcase(rel, pattern):
+        return True
+    return pattern.startswith("**/") and fnmatch.fnmatchcase(rel, pattern[3:])
 
 
 class Workspace:
@@ -65,7 +76,7 @@ class Workspace:
             ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
             cwd=self.root, capture_output=True, text=True,
         ).stdout.splitlines()
-        files = sorted({f for f in out if pattern in ("**/*", "*") or match_path(f, pattern)})
+        files = sorted({f for f in out if pattern in ("**/*", "*") or glob_match(f, pattern)})
         return files[:limit]
 
     def search_code(self, query: str, *, glob: str | None = None, limit: int = 200,

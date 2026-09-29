@@ -174,7 +174,21 @@ class ThemisConfig:
 
 
 @dataclass
+class TargetConfig:
+    """Which repository this config drives, and its architecture rules."""
+
+    name: str = ""
+    # Markdown with the target's authoritative architecture rules, appended to
+    # every OpenAI role. Relative paths resolve against the config file.
+    notes_file: str = ""
+
+    def notes(self) -> str:
+        return Path(self.notes_file).read_text() if self.notes_file else ""
+
+
+@dataclass
 class RuntimeConfig:
+    target: TargetConfig = field(default_factory=TargetConfig)
     openai: OpenAIConfig = field(default_factory=OpenAIConfig)
     claude: ClaudeConfig = field(default_factory=ClaudeConfig)
     tests: CheckConfig = field(default_factory=lambda: CheckConfig(command=["make", "test"]))
@@ -193,6 +207,13 @@ class RuntimeConfig:
         if cfg_path.exists():
             data = yaml.safe_load(cfg_path.read_text()) or {}
         cfg = _merge(cls(), data)
+        if cfg.target.notes_file:
+            notes = Path(cfg.target.notes_file).expanduser()
+            if not notes.is_absolute():
+                notes = cfg_path.parent / notes
+            if not notes.exists():
+                raise FileNotFoundError(f"target.notes_file not found: {notes}")
+            cfg.target.notes_file = str(notes.resolve())
         if model := os.environ.get("THEMIS_AI_OPENAI_MODEL"):
             cfg.openai.model = model
         return cfg

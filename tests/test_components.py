@@ -222,12 +222,66 @@ def test_config_explicit_path_and_service_merge(tmp_path):
     assert cfg.themis.services["governance"] == "http://localhost:8083/api/v1"
 
 
+TARGETS = Path(__file__).resolve().parent.parent / "config" / "targets"
+
+
 def test_shipped_themis_target_config_loads(tmp_path):
-    target = Path(__file__).resolve().parent.parent / "config" / "targets" / "themis.yaml"
-    cfg = RuntimeConfig.load(tmp_path, target)
+    cfg = RuntimeConfig.load(tmp_path, TARGETS / "themis.yaml")
+    assert cfg.target.name == "themis"
+    assert "internal/<context>/{domain,app,adapters}" in cfg.target.notes()
     assert cfg.tests.command == ["make", "check"]
     assert "CLAUDE.md" in cfg.workflow.context_globs
     assert cfg.themis.services["knowledge"].endswith(":8085/api/v1")
+
+
+def test_shipped_harness_target_config_loads(tmp_path):
+    cfg = RuntimeConfig.load(tmp_path, TARGETS / "themis-ai-runtime.yaml")
+    assert cfg.target.name == "themis-ai-runtime"
+    notes = cfg.target.notes()
+    assert "DAY-0" in notes and "G2" in notes and "Themis owns" in notes
+    assert cfg.workflow.require_design_approval is True
+    assert cfg.workflow.delivery == "commit"
+    assert "go test ./src/harness/..." in cfg.tests.command[-1]
+    assert ".claude/policy/DAY-0.md" in cfg.workflow.context_globs
+
+
+def test_target_notes_resolve_relative_to_config_and_must_exist(tmp_path):
+    (tmp_path / "rules.md").write_text("# rules\nno legacy edits\n")
+    target = tmp_path / "t.yaml"
+    target.write_text("target:\n  name: x\n  notes_file: rules.md\n")
+    cfg = RuntimeConfig.load(tmp_path / "elsewhere", target)
+    assert cfg.target.notes_file == str((tmp_path / "rules.md").resolve())
+    assert "no legacy edits" in cfg.target.notes()
+    target.write_text("target:\n  notes_file: missing.md\n")
+    with pytest.raises(FileNotFoundError, match="notes_file"):
+        RuntimeConfig.load(tmp_path, target)
+
+
+def test_target_notes_reach_every_openai_role():
+    spec_payload = {k: v for k, v in make_spec().__dict__.items() if k != "usage"}
+    review_payload = {"verdict": "accept", "summary": "ok", "findings": []}
+    responses = FakeResponses([spec_payload, review_payload])
+    agent = OpenAIArchitectReviewer(OpenAIConfig(), client=SimpleNamespace(responses=responses),
+                                    target_notes="RULE-XYZ: never touch the frozen tree")
+    spec = agent.design("req", "ctx")
+    agent.review(ReviewKind.CODE, "req", spec, "diff", "checks")
+    assert all("RULE-XYZ" in call["instructions"] for call in responses.calls)
+    bare = OpenAIArchitectReviewer(OpenAIConfig(), client=SimpleNamespace(responses=FakeResponses([spec_payload])))
+    bare.design("req", "ctx")
+    assert "Target architecture notes" not in bare.client.responses.calls[0]["instructions"]
+
+
+@pytest.mark.parametrize("rel,pattern,expected", [
+    ("README.md", "README.md", True),
+    ("docs/README.md", "README.md", False),
+    ("docs/README.md", "**/README.md", True),
+    ("README.md", "**/README.md", True),
+    ("openspec/changes/phase3-a/tasks.md", "openspec/changes/phase3-*/tasks.md", True),
+    ("openspec/changes/archive/phase3-a/tasks.md", "openspec/changes/phase3-*/tasks.md", False),
+])
+def test_context_globs_are_anchored_at_the_root(rel, pattern, expected):
+    from themis_ai.workspace import glob_match
+    assert glob_match(rel, pattern) is expected
 
 
 def test_claude_runner_strips_nested_session_marker(tmp_path, monkeypatch):
