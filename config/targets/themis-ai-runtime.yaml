@@ -8,6 +8,13 @@ target:
   # Architecture rules appended to every OpenAI role (architect + reviewers).
   notes_file: themis-ai-runtime.md
   go_module_dir: src/harness
+  env:
+    # The Harness's live-model proofs run whenever a local model answers at
+    # THEMIS_LIVE_OLLAMA (default localhost:11434) and skip otherwise — as in
+    # CI. Point it at a closed port so chopin's gate and Claude's own test runs
+    # stay deterministic even with Ollama running on the laptop; run the live
+    # proofs by hand when you want them.
+    THEMIS_LIVE_OLLAMA: http://127.0.0.1:9
   vm_steps:
     - "`git fetch origin && git checkout {branch}` (head `{sha}`)"
     - "`go build -o bin/ ./src/harness/cmd/...` from the repository root, then run the Harness as the feature needs"

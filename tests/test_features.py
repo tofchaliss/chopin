@@ -281,6 +281,7 @@ def test_shipped_platform_project_loads(tmp_path, monkeypatch):
     assert primary.target.go_module_dir == "src/harness"
     assert repos[1].cfg.target.go_module_dir == "."
     assert "Integration with Themis" in primary.target.notes()
+    assert primary.target.env == {"THEMIS_LIVE_OLLAMA": "http://127.0.0.1:9"}
 
 
 def test_cli_verify_and_reopen_parse(tmp_path, monkeypatch, platform):
@@ -314,3 +315,15 @@ def test_claude_gets_the_other_repositories_and_the_go_workspace(tmp_path):
     assert cmd[cmd.index("--add-dir") + 1] == str(tmp_path / "core")
     assert str(tmp_path / "core") in cmd[2]          # the prompt names the other repository
     assert seen["env"] == {"GOWORK": "/state/go.work"}
+
+
+def test_target_env_reaches_checks_and_claude(platform):
+    runtime, core, state, build = platform
+    orch, _, impl = build(repositories=("runtime",))
+    orch.repos["runtime"].cfg.target.env = {"THEMIS_LIVE_OLLAMA": "http://127.0.0.1:9"}
+    orch.repos["runtime"].cfg.tests = CheckConfig(command=[
+        sys.executable, "-c",
+        "import os,sys; sys.exit(0 if os.environ.get('THEMIS_LIVE_OLLAMA')=='http://127.0.0.1:9' else 1)"])
+    task = orch.start("Harness-only change")
+    assert task.state is TaskState.COMPLETED, task.last_error
+    assert impl.calls[0]["env"] == {"THEMIS_LIVE_OLLAMA": "http://127.0.0.1:9"}

@@ -192,6 +192,9 @@ class TargetConfig:
     # Build/run steps shown in the enterprise-VM checklist. Placeholders:
     # {branch} {base} {sha} {repo}.
     vm_steps: list[str] = field(default_factory=list)
+    # Environment for the target's checks and for Claude Code while it works on
+    # this repository (e.g. keep live-model tests off the deterministic gate).
+    env: dict[str, str] = field(default_factory=dict)
 
     def notes(self) -> str:
         return Path(self.notes_file).read_text() if self.notes_file else ""
