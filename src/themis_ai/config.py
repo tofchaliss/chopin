@@ -115,6 +115,11 @@ class WorkflowConfig:
     # After delivery: "none" completes the task; "vm" waits for the owner to
     # try the feature on the enterprise VM (chopin verify / chopin reopen).
     verification: str = "none"
+    # After an approved push, open a pull request per pushed branch with the
+    # GitHub CLI (covered by the same push approval). When the CLI is missing
+    # or fails, the task records a GitHub compare link instead.
+    pull_request: bool = False
+    pr_tool: str = "gh"
     # Repository files given to the architect as context (globs, in order).
     context_globs: list[str] = field(
         default_factory=lambda: [
@@ -135,7 +140,7 @@ class GuardrailConfig:
     )
     require_approval: list[str] = field(
         default_factory=lambda: [
-            "git_push", "git_merge", "delete_branch", "delete_data",
+            "git_push", "git_merge", "open_pr", "delete_branch", "delete_data",
             "deploy", "modify_credentials", "modify_infrastructure",
             "approve_design",
         ]

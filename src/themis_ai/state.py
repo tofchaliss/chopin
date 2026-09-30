@@ -157,8 +157,10 @@ class Task:
     secondary: dict[str, RepoWork] = field(default_factory=dict)
     # Base branch per secondary repository, when not its configured default.
     base_overrides: dict[str, str] = field(default_factory=dict)
-    # The owner's VM verdict (verify/reopen), latest last.
+    # The owner's verdicts (verify/reopen), latest last; each records where.
     vm_results: list[dict[str, Any]] = field(default_factory=list)
+    # Pull request (or compare link) per pushed repository, by name.
+    pull_requests: dict[str, str] = field(default_factory=dict)
     transitions: list[Transition] = field(default_factory=list)
     metrics: Metrics = field(default_factory=Metrics)
 

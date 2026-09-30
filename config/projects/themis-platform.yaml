@@ -24,6 +24,9 @@ overrides:
     # The VM pulls from GitHub, so a finished feature's branches are pushed —
     # all of them together, after the owner approves the push.
     delivery: push
+    # ...and open a pull request per pushed branch with the GitHub CLI (gh);
+    # without gh the task records a compare link to open it by hand.
+    pull_request: true
     # Every design waits for the owner (the Harness is the primary target, DAY-0).
     require_design_approval: true
     verification: vm
