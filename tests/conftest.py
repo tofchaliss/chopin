@@ -67,8 +67,9 @@ class FakeImplementer:
         self.outputs = list(outputs)
         self.calls: list[dict] = []
 
-    def implement(self, request, spec, *, feedback=None, session_id=None):
-        self.calls.append({"feedback": feedback, "session_id": session_id})
+    def implement(self, request, spec, *, feedback=None, session_id=None, extra_dirs=None, env=None):
+        self.calls.append({"feedback": feedback, "session_id": session_id,
+                           "extra_dirs": extra_dirs, "env": env})
         content = self.outputs.pop(0) if self.outputs else "done"
         if content is None:
             return ImplementationResult(False, "boom")

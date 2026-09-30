@@ -77,3 +77,33 @@ security analysis and negative-path tests), Class 4 architecture/authority.
 - Integration is complete only when
   `openspec/changes/archive/2026-09-27-themis-integration/completion-matrix.md`
   is green.
+
+## Integration with Themis (reviewed with every change)
+
+The Harness and Themis meet at a small set of Themis-owned interfaces. A change
+on either side of one of them is a cross-repository feature: the matching
+Themis change belongs in the same feature (list `themis` in `repositories`),
+and reviewers check both sides against each other.
+
+- **Finding read** — the Harness reads `GET /findings/{id}` over its HTTP seam
+  (projection, identity check, seam-local key, `themis_contract` pin).
+- **Commission** — Themis mints the commission (a Governance act); the Harness
+  carries it verbatim in `origin:commission`; the intake equality-checks it at
+  proposal time.
+- **Evidence and proposal** — the Harness never initiates a Governance act
+  (D-I-1). Themis's intake (`internal/governance/adapters/harness`) replays the
+  record plane (five links) and raises the proposal with
+  `harness-execution/v1` evidence at derived trust `inferred`; an asserted
+  trust is refused.
+- **Module pin** — Themis imports the Harness as the Go module
+  `github.com/tofchaliss/themis-ai-runtime/src/harness`, pinned to a commit.
+  Locally chopin links the two working trees (go.work in its state
+  directory); before the Themis side merges, its `go.mod` pin must move to the
+  pushed Harness commit.
+- **Completion matrix** — `openspec/changes/archive/2026-09-27-themis-integration/completion-matrix.md`
+  must stay green: a change that turns a row yellow or red, or leaves a row's
+  evidence stale, is blocking unless the owner decided otherwise.
+
+Themis's integration work currently lives on its `feat/harness-integration`
+branch, not `main`; a feature that changes Themis says which base it builds on
+(`--base themis=<branch>`).

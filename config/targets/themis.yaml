@@ -6,6 +6,11 @@ target:
   name: themis
   # Architecture rules appended to every OpenAI role (architect + reviewers).
   notes_file: themis.md
+  go_module_dir: "."
+  vm_steps:
+    - "`git fetch origin && git checkout {branch}` (head `{sha}`)"
+    - "If this feature also changed the Harness, Themis must build against it: bump the pin with `go get github.com/tofchaliss/themis-ai-runtime/src/harness@{sha_themis_ai_runtime}` (commit that on the Themis branch before merging)"
+    - "`go build -o bin/ ./cmd/...`, run migrations and restart the nodes as in INSTALLATION.md Part A / deploy/systemd"
 tests:
   # Themis's quality gate: build · vet-tags · test · lint · clean-arch ·
   # arch-test · coverage (pulls in integration tests) · deadcode.
@@ -26,6 +31,9 @@ workflow:
   # passes (owner decision, 2026-09-29); only the reviewed result must pass
   # `make check`. The branch is never merged by chopin without approval.
   delivery: commit               # commit | merge (needs approval) | push (needs approval)
+  # A feature is done only after the owner tries it on the enterprise VM with
+  # Themis and the Harness together (chopin verify / chopin reopen).
+  verification: vm
   # Task state and agent artifacts: outside the checkout. Empty = ~/.chopin/themis.
   state_dir: ""
   # Architect context, in priority order (truncated at context_budget_chars).

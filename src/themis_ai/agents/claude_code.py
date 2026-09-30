@@ -17,7 +17,7 @@ from ..config import ClaudeConfig
 from . import prompts
 from .base import ImplementationResult, Spec, Usage
 
-Runner = Callable[[list[str], Path, int], subprocess.CompletedProcess]
+Runner = Callable[[list[str], Path, int, dict[str, str]], subprocess.CompletedProcess]
 
 
 # Set by an interactive Claude Code session; a nested ``claude -p`` started from
@@ -25,8 +25,10 @@ Runner = Callable[[list[str], Path, int], subprocess.CompletedProcess]
 NESTED_SESSION_ENV = "CLAUDECODE"
 
 
-def _default_runner(cmd: list[str], cwd: Path, timeout: int) -> subprocess.CompletedProcess:
+def _default_runner(cmd: list[str], cwd: Path, timeout: int,
+                    extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     env = {k: v for k, v in os.environ.items() if k != NESTED_SESSION_ENV}
+    env.update(extra_env or {})
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env)
 
 
@@ -38,7 +40,8 @@ class ClaudeCodeImplementer:
         self.runner = runner or _default_runner
         self.mcp_config = mcp_config
 
-    def build_command(self, prompt: str, session_id: str | None) -> list[str]:
+    def build_command(self, prompt: str, session_id: str | None,
+                      extra_dirs: list[Path] | None = None) -> list[str]:
         cmd = [
             self.cfg.binary, "-p", prompt,
             "--output-format", "json",
@@ -53,12 +56,16 @@ class ClaudeCodeImplementer:
             cmd += ["--model", self.cfg.model]
         if self.mcp_config:
             cmd += ["--mcp-config", str(self.mcp_config)]
+        for d in extra_dirs or []:
+            # Other repositories of a multi-repo feature.
+            cmd += ["--add-dir", str(d)]
         if session_id and self.cfg.resume_session:
             cmd += ["--resume", session_id]
         return cmd
 
     def implement(self, request: str, spec: Spec, *, feedback: str | None = None,
-                  session_id: str | None = None) -> ImplementationResult:
+                  session_id: str | None = None, extra_dirs: list[Path] | None = None,
+                  env: dict[str, str] | None = None) -> ImplementationResult:
         if feedback:
             prompt = (
                 f"The previous iteration of this task did not pass. Fix the issues below, "
@@ -69,9 +76,13 @@ class ClaudeCodeImplementer:
         else:
             prompt = (f"Implement the following task in this repository.\n\n## Task\n\n{request}\n\n"
                       f"{spec.to_markdown()}")
+        if extra_dirs:
+            prompt += ("\n\n## Repositories in this feature\n\nThe working directory is the primary "
+                       "repository. Also change, where the specification says so:\n"
+                       + "\n".join(f"- {d}" for d in extra_dirs) + "\n")
         try:
-            proc = self.runner(self.build_command(prompt, session_id), self.workspace,
-                               self.cfg.timeout_seconds)
+            proc = self.runner(self.build_command(prompt, session_id, extra_dirs), self.workspace,
+                               self.cfg.timeout_seconds, env or {})
         except subprocess.TimeoutExpired:
             return ImplementationResult(False, f"Claude Code timed out after {self.cfg.timeout_seconds}s")
         except FileNotFoundError:

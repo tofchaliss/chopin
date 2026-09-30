@@ -25,12 +25,19 @@ Rules:
   the repository's quality gate.
 - The test plan must name concrete tests to add or change.
 - Keep scope to what was asked. No speculative features.
+- The context may cover more than one repository (each section is headed
+  "Repository: <name>"; the first is the primary). List in `repositories`
+  every repository the change must touch, primary first; change a secondary
+  repository only when the feature needs it. Prefix every path in
+  files_to_change with its repository name (`<repo>:<path>`).
 """
 
 _REVIEW_COMMON = """\
 You are reviewing a change produced by a separate implementation agent. You
 are independent of it: do not assume its claims are true; verify them against
-the diff and the check output.
+the diff and the check output. A feature may span repositories: the diff and
+checks are grouped per repository, and the contract between them (APIs, event
+and evidence shapes, module pins) is part of what you review.
 
 Accept only if the change is correct and complete for the specification and
 complies with the target architecture notes below. Every finding must be

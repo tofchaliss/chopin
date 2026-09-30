@@ -24,15 +24,15 @@ to a human instead of looping forever.
 from __future__ import annotations
 
 import re
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
 from .agents.base import ArchitectReviewer, Implementer, Review, ReviewKind, Spec, Usage
-from .config import RuntimeConfig, resolve_state_dir
+from .config import Repo, RuntimeConfig, resolve_state_dir
 from .gitops import LocalGit
 from .guardrails import ApprovalRequired, GuardrailViolation, Guardrails
-from .state import PendingApproval, StateManager, Task, TaskState, _now
+from .state import PendingApproval, RepoWork, StateManager, Task, TaskState, _now
 from .workspace import Workspace
 
 # Agent artifacts, relative to <state dir>/artifacts/<task id>/. They are kept
@@ -44,6 +44,7 @@ ARTIFACTS = {
     ReviewKind.FINAL: "openai/final-review.md",
     "implementation": "claude/implementation.md",
     "tests": "claude/test-results.md",
+    "vm": "vm-checklist.md",
 }
 
 REVIEW_STATE = {
@@ -59,9 +60,23 @@ class PreflightError(RuntimeError):
     pass
 
 
+@dataclass
+class RepoCtx:
+    """A repository the orchestrator can work in: its config, git and workspace."""
+
+    name: str
+    root: Path
+    cfg: RuntimeConfig
+    git: LocalGit
+    ws: Workspace
+
+
 class Orchestrator:
     def __init__(self, workspace: Path, config: RuntimeConfig, architect: ArchitectReviewer,
-                 implementer: Implementer, on_event: EventSink | None = None):
+                 implementer: Implementer, on_event: EventSink | None = None,
+                 others: list[Repo] | None = None):
+        """``workspace``/``config`` is the primary repository; ``others`` are the
+        further repositories a feature may also change (see ``load_project``)."""
         self.root = workspace.resolve()
         self.cfg = config
         self.state_root = resolve_state_dir(config, self.root)
@@ -72,13 +87,31 @@ class Orchestrator:
         self.architect = architect
         self.implementer = implementer
         self._emit = on_event or (lambda _msg, _task: None)
+        self.primary = config.target.name or self.root.name
+        self.repos: dict[str, RepoCtx] = {
+            self.primary: RepoCtx(self.primary, self.root, config, self.git, self.ws)}
+        for other in others or []:
+            root = other.root.resolve()
+            guard = Guardrails(other.cfg.guardrails, root, audit=self.state.audit)
+            self.repos[other.name] = RepoCtx(other.name, root, other.cfg,
+                                             LocalGit(root, guard), Workspace(root, guard))
 
     # ------------------------------------------------------------------ API
-    def start(self, request: str) -> Task:
-        """Task planner entry point: create a task on its own branch and run it."""
-        self._preflight()
+    def start(self, request: str, bases: dict[str, str] | None = None) -> Task:
+        """Task planner entry point: create a task on its own branch and run it.
+
+        ``bases`` overrides the base branch per repository name (e.g. Themis work
+        that builds on an integration branch instead of main).
+        """
+        bases = dict(bases or {})
+        unknown = set(bases) - set(self.repos)
+        if unknown:
+            raise PreflightError(f"unknown repository in --base: {', '.join(sorted(unknown))}")
         wf = self.cfg.workflow
-        task = Task.create(request, wf.base_branch, wf.branch_prefix, wf.max_iterations)
+        base = bases.pop(self.primary, wf.base_branch)
+        self._preflight(base)
+        task = Task.create(request, base, wf.branch_prefix, wf.max_iterations, repo=self.primary)
+        task.base_overrides = bases
         self.git.create_branch(task.branch, task.base_branch)
         self.state.save(task)
         self._emit(f"created task {task.id} on branch {task.branch}", task)
@@ -125,7 +158,37 @@ class Orchestrator:
             self.state.save(task)
         if self.git.current_branch() != task.base_branch and self.git.is_clean():
             self.git.checkout(task.base_branch)
+        for work in task.secondary.values():
+            repo = self.repos.get(work.name)
+            if repo and repo.git.current_branch() != work.base_branch and repo.git.is_clean():
+                repo.git.checkout(work.base_branch)
         return task
+
+    def verify(self, task_id: str | None, evidence: str, *, by: str = "owner") -> Task:
+        """The owner tried the feature on the enterprise VM and it works: close it."""
+        task = self._awaiting_vm(task_id)
+        result = {"at": _now(), "by": by, "passed": True, "evidence": evidence}
+        task.vm_results.append(result)
+        self.state.record_decision(task, "vm-verification", result)
+        self.state.audit({"type": "vm_verification", "task": task.id, "passed": True, "by": by})
+        task.transition(TaskState.COMPLETED, f"verified on the VM by {by}")
+        self.state.save(task)
+        return task
+
+    def reopen(self, task_id: str | None, failure: str, *, by: str = "owner") -> Task:
+        """The VM test failed: feed what failed back into the fix loop."""
+        task = self._awaiting_vm(task_id)
+        result = {"at": _now(), "by": by, "passed": False, "evidence": failure}
+        task.vm_results.append(result)
+        self.state.record_decision(task, "vm-verification", result)
+        self.state.audit({"type": "vm_verification", "task": task.id, "passed": False, "by": by})
+        task.pending_feedback = ("The feature failed when the owner tried it on the enterprise VM "
+                                 f"(Themis and the Harness together):\n\n{failure}")
+        task.iteration_budget = task.metrics.iterations + self.cfg.workflow.max_iterations
+        task.metrics.iterations += 1
+        task.transition(TaskState.FIXING, "VM verification failed; reopened by owner")
+        self.state.save(task)
+        return self.advance(task)
 
     # ------------------------------------------------------- workflow engine
     def advance(self, task: Task) -> Task:
@@ -160,8 +223,20 @@ class Orchestrator:
 
     # ------------------------------------------------------------- handlers
     def _analyze(self, task: Task) -> None:
-        spec = self.architect.design(task.request, self._repo_context(task.request))
+        if len(self.repos) == 1:
+            context = self._repo_context(task.request, self.repos[self.primary])
+        else:
+            context = "\n\n".join(
+                f"# Repository: {name}{' (primary)' if name == self.primary else ''}\n\n"
+                + self._repo_context(task.request, repo) for name, repo in self.repos.items())
+        spec = self.architect.design(task.request, context)
         self._account(task, spec.usage, "openai")
+        unknown = [r for r in spec.repositories if r not in self.repos]
+        if unknown:
+            spec.open_questions.append(
+                f"The specification names repositories chopin does not have: {', '.join(unknown)}.")
+        spec.repositories = [self.primary] + [
+            r for r in dict.fromkeys(spec.repositories) if r in self.repos and r != self.primary]
         task.spec = {k: v for k, v in asdict(spec).items() if k != "usage"}
         self._write_artifact(task, "architecture", spec.to_markdown())
         self.state.record_decision(task, "architecture", task.spec)
@@ -179,6 +254,7 @@ class Orchestrator:
             if status is False:
                 task.transition(TaskState.REJECTED, "design rejected by owner")
                 return
+        self._open_secondary_branches(task)
         task.transition(TaskState.IMPLEMENTING)
 
     def _implement(self, task: Task) -> None:
@@ -187,6 +263,8 @@ class Orchestrator:
             task.request, self._spec(task),
             feedback=task.pending_feedback if fixing else None,
             session_id=task.claude_session_id,
+            extra_dirs=[self.repos[w.name].root for w in task.secondary.values()] or None,
+            env=self._go_env(task) or None,
         )
         self._account(task, result.usage, "claude")
         if result.session_id:
@@ -196,15 +274,19 @@ class Orchestrator:
         if not result.ok:
             raise RuntimeError(f"implementation agent failed: {result.summary[:500]}")
         label = f"fix {task.metrics.iterations}" if fixing else "implement"
-        sha = self.git.commit_all(f"wip({task.id}): {label}\n\n{task.request}", actor="claude")
-        if sha:
-            task.commits.append(sha)
+        self._commit_all(task, f"wip({task.id}): {label}\n\n{task.request}", actor="claude")
         task.pending_feedback = None
         task.transition(TaskState.TESTING, label)
 
     def _test(self, task: Task) -> None:
         task.metrics.test_runs += 1
-        results = [self.ws.run_check("tests", self.cfg.tests), self.ws.run_check("lint", self.cfg.lint)]
+        env = self._go_env(task) or None
+        multi = bool(task.secondary)
+        results = []
+        for repo in self._involved(task):
+            prefix = f"{repo.name}:" if multi else ""
+            results.append(repo.ws.run_check(f"{prefix}tests", repo.cfg.tests, env=env))
+            results.append(repo.ws.run_check(f"{prefix}lint", repo.cfg.lint, env=env))
         report = "\n".join(r.to_markdown() for r in results)
         self._write_artifact(task, "tests", f"# Test results (run {task.metrics.test_runs})\n\n{report}")
         self.state.record_decision(task, "checks", {"results": [r.to_dict() for r in results]})
@@ -217,7 +299,7 @@ class Orchestrator:
 
     def _review(self, task: Task) -> None:
         kind = REVIEW_STATE[task.state]
-        diff = self.git.diff(task.base_branch)
+        diff = self._feature_diff(task)
         if not diff.strip():
             self._to_fixing(task, "The change is empty: no code was modified relative to "
                                   f"{task.base_branch}. Implement the specification.", "empty diff")
@@ -238,16 +320,14 @@ class Orchestrator:
     def _commit(self, task: Task) -> None:
         # Iteration commits already hold the code; this catches anything left in
         # the tree (normally nothing, since artifacts live outside the repository).
-        sha = self.git.commit_all(f"feat: {task.request}\n\nthemis-ai task {task.id}: "
-                                  f"reviewed and approved by the orchestrated workflow.")
-        if sha:
-            task.commits.append(sha)
+        sha = self._commit_all(task, f"feat: {task.request}\n\nthemis-ai task {task.id}: "
+                                     f"reviewed and approved by the orchestrated workflow.")
         task.transition(TaskState.COMMITTED, sha or f"approved at {self.git.head()[:12]}")
 
     def _deliver(self, task: Task) -> None:
         delivery = self.cfg.workflow.delivery
         if delivery == "commit":
-            task.transition(TaskState.COMPLETED, f"committed on {task.branch}")
+            self._finish(task, f"committed on {task.branch}")
             return
         action = {"merge": "git_merge", "push": "git_push"}.get(delivery)
         if action is None:
@@ -256,16 +336,30 @@ class Orchestrator:
         if status is None:
             raise ApprovalRequired(self.guard.check(action))
         if status is False:
-            task.transition(TaskState.COMPLETED, f"{delivery} declined by owner; work kept on {task.branch}")
+            task.approval = None
+            self._finish(task, f"{delivery} declined by owner; work kept on {task.branch}")
             return
-        if delivery == "merge":
-            sha = self.git.merge(task.branch, task.base_branch, approved=True)
-            note = f"merged into {task.base_branch} at {sha[:12]}"
-        else:
-            self.git.push(self.cfg.workflow.remote, task.branch, approved=True)
-            note = f"pushed {task.branch} to {self.cfg.workflow.remote}"
+        notes = []
+        for repo in self._involved(task):
+            base = self._base_of(task, repo.name)
+            if delivery == "merge":
+                sha = repo.git.merge(task.branch, base, approved=True)
+                notes.append(f"{repo.name}: merged into {base} at {sha[:12]}")
+            else:
+                repo.git.push(repo.cfg.workflow.remote, task.branch, approved=True)
+                notes.append(f"{repo.name}: pushed {task.branch} to {repo.cfg.workflow.remote}")
         task.approval = None
-        task.transition(TaskState.COMPLETED, note)
+        self._finish(task, "; ".join(notes))
+
+    def _finish(self, task: Task, note: str) -> None:
+        if self.cfg.workflow.verification == "vm":
+            self._write_artifact(task, "vm", self._vm_checklist(task))
+            task.transition(TaskState.AWAITING_VM_VERIFICATION,
+                            f"{note}; try it on the enterprise VM, then verify or reopen")
+        elif self.cfg.workflow.verification == "none":
+            task.transition(TaskState.COMPLETED, note)
+        else:
+            raise ValueError(f"unknown verification mode: {self.cfg.workflow.verification}")
 
     # -------------------------------------------------------------- helpers
     def _to_fixing(self, task: Task, feedback: str, note: str) -> None:
@@ -311,21 +405,115 @@ class Orchestrator:
         self.state.audit({"type": "failure", "task": task.id, "state": state.value, "error": error})
 
     def _ensure_on_branch(self, task: Task) -> None:
-        if task.is_terminal or task.state is TaskState.COMMITTED:
+        if task.is_terminal or task.state in (TaskState.COMMITTED, TaskState.AWAITING_VM_VERIFICATION):
             return
-        if self.git.current_branch() != task.branch:
-            self.git.checkout(task.branch)
+        for repo in self._involved(task):
+            if repo.git.current_branch() != task.branch:
+                repo.git.checkout(task.branch)
 
-    def _preflight(self) -> None:
-        if not self.git.is_repo():
-            raise PreflightError(f"{self.root} is not a git repository")
-        if self.state_root == self.root or self.root in self.state_root.parents:
-            raise PreflightError(f"state directory {self.state_root} is inside the workspace; "
-                                 "set workflow.state_dir or CHOPIN_HOME outside it")
-        if not self.git.is_clean():
-            raise PreflightError("working tree has uncommitted changes; commit or stash them first")
-        if not self.git.branch_exists(self.cfg.workflow.base_branch):
-            raise PreflightError(f"base branch {self.cfg.workflow.base_branch!r} does not exist")
+    def _preflight(self, base: str) -> None:
+        for name, repo in self.repos.items():
+            if not repo.git.is_repo():
+                raise PreflightError(f"{repo.root} is not a git repository")
+            if self.state_root == repo.root or repo.root in self.state_root.parents:
+                raise PreflightError(f"state directory {self.state_root} is inside the workspace "
+                                     f"{repo.root}; set workflow.state_dir or CHOPIN_HOME outside it")
+            if not repo.git.is_clean():
+                raise PreflightError(f"{name}: working tree has uncommitted changes; "
+                                     "commit or stash them first")
+        if not self.git.branch_exists(base):
+            raise PreflightError(f"base branch {base!r} does not exist")
+
+    # ------------------------------------------------------ multi-repo helpers
+    def _involved(self, task: Task) -> list[RepoCtx]:
+        """Repositories this feature changes: the primary, then the secondaries."""
+        return [self.repos[self.primary]] + [self.repos[w.name] for w in task.secondary.values()
+                                             if w.name in self.repos]
+
+    def _base_of(self, task: Task, name: str) -> str:
+        return task.base_branch if name == self.primary else task.secondary[name].base_branch
+
+    def _open_secondary_branches(self, task: Task) -> None:
+        """Create the feature branch in every secondary repository the spec names."""
+        for name in self._spec(task).repositories:
+            if name == self.primary or name in task.secondary:
+                continue
+            repo = self.repos[name]
+            base = task.base_overrides.get(name, repo.cfg.workflow.base_branch)
+            if not repo.git.branch_exists(base):
+                raise PreflightError(f"{name}: base branch {base!r} does not exist")
+            repo.git.create_branch(task.branch, base)
+            task.secondary[name] = RepoWork(name, str(repo.root), task.branch, base)
+            self._emit(f"{name}: created branch {task.branch} from {base}", task)
+
+    def _commit_all(self, task: Task, message: str, *, actor: str = "orchestrator") -> str | None:
+        """Commit in every involved repository; returns the primary's new sha."""
+        primary_sha = None
+        for repo in self._involved(task):
+            sha = repo.git.commit_all(message, actor=actor)
+            if not sha:
+                continue
+            if repo.name == self.primary:
+                task.commits.append(sha)
+                primary_sha = sha
+            else:
+                task.secondary[repo.name].commits.append(sha)
+        return primary_sha
+
+    def _feature_diff(self, task: Task) -> str:
+        if not task.secondary:
+            return self.git.diff(task.base_branch)
+        parts = []
+        for repo in self._involved(task):
+            diff = repo.git.diff(self._base_of(task, repo.name))
+            if diff.strip():
+                parts.append(f"### Repository: {repo.name}\n\n{diff}")
+        return "\n".join(parts)
+
+    def _go_env(self, task: Task) -> dict[str, str]:
+        """Link the Go modules of a multi-repo feature through a go.work kept in the
+        state directory, so each repository builds against the others' working
+        trees. Nothing is written into the repositories."""
+        modules = [(repo.root / repo.cfg.target.go_module_dir).resolve()
+                   for repo in self._involved(task) if repo.cfg.target.go_module_dir]
+        if len(modules) < 2:
+            return {}
+        versions = [_go_version(m / "go.mod") for m in modules]
+        go = max(versions, key=lambda v: tuple(int(x) for x in v.split("."))) if all(versions) else "1.24"
+        work = self.state_root / "work" / task.id / "go.work"
+        work.parent.mkdir(parents=True, exist_ok=True)
+        work.write_text(f"go {go}\n\nuse (\n" + "".join(f"\t{m}\n" for m in modules) + ")\n")
+        return {"GOWORK": str(work)}
+
+    def _vm_checklist(self, task: Task) -> str:
+        spec = self._spec(task)
+        lines = [f"# Enterprise VM checklist — task {task.id}", "", f"**Feature:** {task.request}", "",
+                 "Themis and the Harness run together on the VM. Nothing here is automated: "
+                 "chopin never touches the VM.", "", "## Code", "",
+                 "| Repository | Branch | Base | Head |", "|---|---|---|---|"]
+        heads = {}
+        for repo in self._involved(task):
+            heads[repo.name] = repo.git.head()
+            lines.append(f"| {repo.name} | `{task.branch}` | `{self._base_of(task, repo.name)}` | "
+                         f"`{heads[repo.name][:12]}` |")
+        lines += ["", "## Build and run", ""]
+        n = 1
+        for repo in self._involved(task):
+            for step in repo.cfg.target.vm_steps:
+                values = _Placeholders(branch=task.branch, base=self._base_of(task, repo.name),
+                                       sha=heads[repo.name], repo=repo.name,
+                                       **{f"sha_{k.replace('-', '_')}": v for k, v in heads.items()})
+                text = step.format_map(values)
+                lines.append(f"{n}. **{repo.name}:** {text}")
+                n += 1
+        if n == 1:
+            lines.append("(no vm_steps configured for these targets)")
+        lines += ["", "## What to check (acceptance criteria)", ""]
+        lines += [f"- [ ] {c}" for c in spec.acceptance_criteria] or ["- (none)"]
+        lines += ["", "## Record the result", "",
+                  "- Works: `chopin verify -m \"<what you ran and saw>\"`",
+                  "- Fails: `chopin reopen -m \"<what failed, with output>\"` — goes back to the fix loop", ""]
+        return "\n".join(lines)
 
     def _spec(self, task: Task) -> Spec:
         if not task.spec:
@@ -362,26 +550,32 @@ class Orchestrator:
         m = task.metrics
         return m.openai_input_tokens * 5e-6 + m.openai_output_tokens * 20e-6
 
-    def _repo_context(self, request: str) -> str:
+    def _awaiting_vm(self, task_id: str | None) -> Task:
+        task = self.state.load(task_id)
+        if task.state is not TaskState.AWAITING_VM_VERIFICATION:
+            raise RuntimeError(f"task {task.id} is not awaiting VM verification (state {task.state.value})")
+        return task
+
+    def _repo_context(self, request: str, repo: RepoCtx) -> str:
         """Deterministic context bundle for the architect: tree, docs, and hits
         for identifiers mentioned in the request (e.g. KN-MODULE-4)."""
-        budget = self.cfg.openai.context_budget_chars
+        budget = repo.cfg.openai.context_budget_chars
         parts: list[str] = []
-        files = self.ws.list_files()
+        files = repo.ws.list_files()
         parts.append("### File tree\n\n" + "\n".join(files[:1500]))
         ids = set(re.findall(r"\b[A-Za-z][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)+\b", request))
         # CamelCase identifiers (SbomParser, handleGetProduct), not SHOUTING words.
         ids |= set(re.findall(r"\b[A-Za-z_]*[a-z][A-Za-z0-9_]*[A-Z][A-Za-z0-9_]*\b", request))
         for ident in sorted(ids):
-            hits = self.ws.search_code(ident, limit=50)
+            hits = repo.ws.search_code(ident, limit=50)
             parts.append(f"### References to `{ident}`\n\n" + ("\n".join(hits) or "(no matches in repository)"))
         seen: set[str] = set()
-        for pattern in self.cfg.workflow.context_globs:
-            for f in self.ws.list_files(pattern):
+        for pattern in repo.cfg.workflow.context_globs:
+            for f in repo.ws.list_files(pattern):
                 if f in seen:
                     continue
                 seen.add(f)
-                parts.append(f"### {f}\n\n{self.ws.read_file(f)}")
+                parts.append(f"### {f}\n\n{repo.ws.read_file(f)}")
         out, used = [], 0
         for p in parts:
             if used + len(p) > budget:
@@ -390,3 +584,18 @@ class Orchestrator:
             out.append(p)
             used += len(p)
         return "\n\n".join(out)
+
+
+def _go_version(go_mod: Path) -> str:
+    """The ``go`` directive of a go.mod, e.g. "1.25.0" -> "1.25.0"; "" if absent."""
+    if not go_mod.exists():
+        return ""
+    m = re.search(r"^go\s+(\d+(?:\.\d+)*)\s*$", go_mod.read_text(), re.M)
+    return m.group(1) if m else ""
+
+
+class _Placeholders(dict):
+    """format_map values for vm_steps; a repository not in this feature reads as such."""
+
+    def __missing__(self, key: str) -> str:
+        return f"<{key}: not part of this feature>"

@@ -112,6 +112,9 @@ class WorkflowConfig:
     # outside the workspace. Empty: $CHOPIN_HOME/<workspace name>, else
     # ~/.chopin/<workspace name>.
     state_dir: str = ""
+    # After delivery: "none" completes the task; "vm" waits for the owner to
+    # try the feature on the enterprise VM (chopin verify / chopin reopen).
+    verification: str = "none"
     # Repository files given to the architect as context (globs, in order).
     context_globs: list[str] = field(
         default_factory=lambda: [
@@ -181,6 +184,14 @@ class TargetConfig:
     # Markdown with the target's authoritative architecture rules, appended to
     # every OpenAI role. Relative paths resolve against the config file.
     notes_file: str = ""
+    # Go module directory inside the repository ("." or e.g. "src/harness").
+    # When a feature spans several repositories that set it, their modules are
+    # linked through a go.work kept in the state directory (GOWORK), so each
+    # repository builds against the others' working trees.
+    go_module_dir: str = ""
+    # Build/run steps shown in the enterprise-VM checklist. Placeholders:
+    # {branch} {base} {sha} {repo}.
+    vm_steps: list[str] = field(default_factory=list)
 
     def notes(self) -> str:
         return Path(self.notes_file).read_text() if self.notes_file else ""
@@ -246,3 +257,45 @@ def resolve_state_dir(cfg: RuntimeConfig, workspace: Path) -> Path:
     home = os.environ.get(STATE_HOME_ENV)
     base = Path(home).expanduser() if home else Path.home() / ".chopin"
     return (base / workspace.resolve().name).resolve()
+
+
+@dataclass
+class Repo:
+    """One repository of a feature workspace."""
+
+    name: str
+    root: Path
+    cfg: RuntimeConfig
+
+
+def load_project(path: Path) -> list[Repo]:
+    """Load a feature workspace: several repositories developed together.
+
+    The first repository is the primary one; its config drives the workflow
+    (models, budgets, delivery, verification) and ``overrides`` in the project
+    file are merged over it. Task state lives in <state home>/<project name>.
+    """
+    data = yaml.safe_load(path.read_text()) or {}
+    unknown = set(data) - {"name", "repos", "overrides"}
+    if unknown:
+        raise ValueError(f"unknown project key(s): {', '.join(sorted(unknown))}")
+    name = data.get("name") or path.stem
+    entries = data.get("repos") or []
+    if not entries:
+        raise ValueError(f"project {name}: no repos")
+    repos: list[Repo] = []
+    for entry in entries:
+        root = Path(os.path.expandvars(str(entry["path"]))).expanduser().resolve()
+        cfg_path = Path(entry["config"])
+        cfg_path = cfg_path if cfg_path.is_absolute() else path.parent / cfg_path
+        cfg = RuntimeConfig.load(root, cfg_path)
+        repos.append(Repo(entry.get("name") or cfg.target.name or root.name, root, cfg))
+    if len({r.name for r in repos}) != len(repos):
+        raise ValueError(f"project {name}: repository names must be unique")
+    primary = repos[0].cfg
+    _merge(primary, data.get("overrides") or {})
+    if not primary.workflow.state_dir:
+        home = os.environ.get(STATE_HOME_ENV)
+        base = Path(home).expanduser() if home else Path.home() / ".chopin"
+        primary.workflow.state_dir = str(base / name)
+    return repos

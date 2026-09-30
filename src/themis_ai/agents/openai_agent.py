@@ -29,9 +29,10 @@ SPEC_SCHEMA: dict[str, Any] = {
         "test_plan": _STR_LIST,
         "risks": _STR_LIST,
         "open_questions": _STR_LIST,
+        "repositories": _STR_LIST,
     },
     "required": ["summary", "requirements", "design", "files_to_change",
-                 "acceptance_criteria", "test_plan", "risks", "open_questions"],
+                 "acceptance_criteria", "test_plan", "risks", "open_questions", "repositories"],
 }
 
 REVIEW_SCHEMA: dict[str, Any] = {

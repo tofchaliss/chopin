@@ -6,10 +6,14 @@ that writes git history; Claude Code only edits the working tree.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
 from .guardrails import Guardrails
+
+PUSH_APPROVED_ENV = "THEMIS_PUSH_APPROVED"
+
 
 class GitError(RuntimeError):
     pass
@@ -20,8 +24,9 @@ class LocalGit:
         self.workspace = workspace
         self.guard = guardrails
 
-    def _git(self, *args: str, check: bool = True) -> str:
-        proc = subprocess.run(["git", *args], cwd=self.workspace, capture_output=True, text=True)
+    def _git(self, *args: str, check: bool = True, env: dict[str, str] | None = None) -> str:
+        proc = subprocess.run(["git", *args], cwd=self.workspace, capture_output=True, text=True,
+                              env={**os.environ, **env} if env else None)
         if check and proc.returncode != 0:
             raise GitError(f"git {' '.join(args)} failed: {proc.stderr.strip() or proc.stdout.strip()}")
         return proc.stdout
@@ -87,7 +92,8 @@ class LocalGit:
 
     def push(self, remote: str, branch: str, *, approved: bool) -> None:
         self.guard.enforce("git_push", approved=approved)
-        self._git("push", "-u", remote, branch)
+        # themis-ai-runtime records an owner-approved push by this marker.
+        self._git("push", "-u", remote, branch, env={PUSH_APPROVED_ENV: "1"})
 
     def _has_identity(self) -> bool:
         return bool(self._git("config", "user.email", check=False).strip())
