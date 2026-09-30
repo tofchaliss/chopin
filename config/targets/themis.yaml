@@ -16,6 +16,10 @@ tests:
   # arch-test · coverage (pulls in integration tests) · deadcode.
   command: [make, check]
   timeout_seconds: 3600
+claude:
+  # One builder run on Themis (a new store, migrations, workers, API) can take
+  # well over the default hour; partial work survives a timeout (chopin resume).
+  timeout_seconds: 7200
 lint:
   # Covered by `make check`; no separate lint step.
   command: []

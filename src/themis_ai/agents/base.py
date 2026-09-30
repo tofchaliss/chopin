@@ -105,6 +105,8 @@ class ImplementationResult:
     session_id: str | None = None
     usage: Usage = field(default_factory=Usage)
     raw: str = ""
+    # The agent was stopped at its time limit; its partial changes stay in the tree.
+    timed_out: bool = False
 
 
 class ArchitectReviewer(Protocol):

@@ -82,6 +82,9 @@ Rules:
 - Implement exactly the specification. If it is wrong or ambiguous, do the
   most conservative correct thing and explain in your final message.
 - Write or update tests per the test plan, and run them before finishing.
+  Run the tests (and vet/lint) of the packages you changed, not the
+  whole-repository gate (e.g. `make check`): the orchestrator runs the full
+  gate itself after you finish and sends you any failure.
 - Do not run git commands that change history or branches, do not push, and
   do not modify secrets, credentials, or deployment infrastructure.
 - Keep the change minimal and consistent with the surrounding code.

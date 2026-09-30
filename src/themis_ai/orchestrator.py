@@ -301,7 +301,8 @@ class Orchestrator:
         fixing = task.state is TaskState.FIXING
         result = self.implementer.implement(
             task.request, self._spec(task),
-            feedback=task.pending_feedback if fixing else None,
+            # Set outside FIXING only after an attempt was cut off at its time limit.
+            feedback=task.pending_feedback,
             session_id=task.claude_session_id,
             extra_dirs=[self.repos[w.name].root for w in task.secondary.values()] or None,
             env=self._run_env(task) or None,
@@ -312,6 +313,14 @@ class Orchestrator:
         heading = f"Fix iteration {task.metrics.iterations}" if fixing else "Initial implementation"
         self._append_artifact(task, "implementation", f"## {heading}\n\n{result.summary}\n")
         if not result.ok:
+            if result.timed_out:
+                # A retry (chopin resume) continues from the partial work in the tree.
+                task.pending_feedback = (
+                    f"{task.pending_feedback or ''}\n\n## Previous attempt was cut off\n\n"
+                    "The previous attempt hit its time limit before finishing. Its partial "
+                    "changes are still in the working tree: review them, keep what is right, "
+                    "and finish the specification. Run only the tests of the packages you "
+                    "changed; the orchestrator runs the full gate.").strip()
             raise RuntimeError(f"implementation agent failed: {result.summary[:500]}")
         label = f"fix {task.metrics.iterations}" if fixing else "implement"
         self._commit_all(task, f"wip({task.id}): {label}\n\n{task.request}", actor="claude")

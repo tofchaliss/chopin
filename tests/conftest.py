@@ -75,6 +75,9 @@ class FakeImplementer:
         content = self.outputs.pop(0) if self.outputs else "done"
         if content is None:
             return ImplementationResult(False, "boom")
+        if content == "TIMEOUT":
+            (self.root / "feature.txt").write_text("partial\n")
+            return ImplementationResult(False, "Claude Code timed out after 1s", timed_out=True)
         (self.root / "feature.txt").write_text(content + "\n")
         return ImplementationResult(True, f"wrote {content}", session_id="sess-1", usage=Usage(cost_usd=0.5))
 
