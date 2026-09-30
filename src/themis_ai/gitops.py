@@ -7,6 +7,7 @@ that writes git history; Claude Code only edits the working tree.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -90,6 +91,26 @@ class LocalGit:
         self._git("merge", "--no-ff", "-m", f"Merge {branch}", branch)
         return self.head()
 
+    def github_repo(self, remote: str) -> str | None:
+        """``owner/repo`` when the remote points at GitHub, else None."""
+        url = self._git("remote", "get-url", remote, check=False).strip()
+        return parse_github_repo(url)
+
+    def open_pull_request(self, tool: str, *, base: str, branch: str, title: str, body: str,
+                          approved: bool) -> str:
+        """Open a PR with the GitHub CLI (or return the existing one); returns its URL."""
+        self.guard.enforce("open_pr", approved=approved)
+        proc = subprocess.run([tool, "pr", "create", "--base", base, "--head", branch,
+                               "--title", title, "--body-file", "-"],
+                              cwd=self.workspace, input=body, capture_output=True, text=True)
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip().splitlines()[-1]
+        existing = subprocess.run([tool, "pr", "view", branch, "--json", "url", "--jq", ".url"],
+                                  cwd=self.workspace, capture_output=True, text=True)
+        if existing.returncode == 0 and existing.stdout.strip():
+            return existing.stdout.strip().splitlines()[-1]
+        raise GitError(f"{tool} pr create failed: {(proc.stderr or proc.stdout).strip()[:500]}")
+
     def push(self, remote: str, branch: str, *, approved: bool) -> None:
         self.guard.enforce("git_push", approved=approved)
         # themis-ai-runtime records an owner-approved push by this marker.
@@ -97,3 +118,14 @@ class LocalGit:
 
     def _has_identity(self) -> bool:
         return bool(self._git("config", "user.email", check=False).strip())
+
+
+def parse_github_repo(url: str) -> str | None:
+    """``owner/repo`` from a GitHub remote URL (https or ssh), else None."""
+    m = re.match(r"^(?:https?://(?:[^@/]+@)?github\.com/|git@github\.com:|ssh://git@github\.com/)"
+                 r"([^/]+)/([^/]+?)(?:\.git)?/?$", url.strip())
+    return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
+def compare_url(repo: str, base: str, branch: str) -> str:
+    return f"https://github.com/{repo}/compare/{base}...{branch}?expand=1"

@@ -91,7 +91,10 @@ def render(task: Task) -> str:
         lines.append("AWAITING VM VERIFICATION: follow artifacts/<task>/vm-checklist.md in the state "
                      "directory, then `chopin verify -m \"...\"` or `chopin reopen -m \"...\"`")
     for v in task.vm_results[-3:]:
-        lines.append(f"vm {'PASS' if v['passed'] else 'FAIL'} {v['at']} by {v['by']}: {v['evidence'][:200]}")
+        lines.append(f"{v.get('where', 'vm')} {'PASS' if v['passed'] else 'FAIL'} {v['at']} by {v['by']}: "
+                     f"{v['evidence'][:200]}")
+    for name, url in task.pull_requests.items():
+        lines.append(f"PR {name}: {url}")
     if task.state is TaskState.ESCALATED:
         lines.append("ESCALATED: review artifacts/ and decisions/ in the state directory, then "
                      "`chopin resume -g \"...\"` or `chopin abort`")
@@ -126,7 +129,9 @@ def main(argv: list[str] | None = None) -> int:
             sp.add_argument("-m", "--comment")
         if name in ("verify", "reopen"):
             sp.add_argument("-m", "--message", required=True,
-                            help="what you ran on the VM and what you saw")
+                            help="what you ran and what you saw")
+            sp.add_argument("--where", default="vm",
+                            help="where you checked: vm (default), mac, or any short label")
         if name == "resume":
             sp.add_argument("-g", "--guidance")
     sub.add_parser("history")
@@ -152,9 +157,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.cmd == "run":
                 task = orch.start(" ".join(args.request), bases=bases)
             elif args.cmd == "verify":
-                task = orch.verify(args.task, args.message)
+                task = orch.verify(args.task, args.message, where=args.where)
             elif args.cmd == "reopen":
-                task = orch.reopen(args.task, args.message)
+                task = orch.reopen(args.task, args.message, where=args.where)
             elif args.cmd in ("approve", "reject"):
                 task = orch.decide(args.task, args.cmd == "approve", comment=args.comment)
             elif args.cmd == "resume":

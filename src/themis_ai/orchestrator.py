@@ -30,7 +30,7 @@ from typing import Callable
 
 from .agents.base import ArchitectReviewer, Implementer, Review, ReviewKind, Spec, Usage
 from .config import Repo, RuntimeConfig, resolve_state_dir
-from .gitops import LocalGit
+from .gitops import GitError, LocalGit, compare_url
 from .guardrails import ApprovalRequired, GuardrailViolation, Guardrails
 from .state import PendingApproval, RepoWork, StateManager, Task, TaskState, _now
 from .workspace import Workspace
@@ -164,29 +164,34 @@ class Orchestrator:
                 repo.git.checkout(work.base_branch)
         return task
 
-    def verify(self, task_id: str | None, evidence: str, *, by: str = "owner") -> Task:
-        """The owner tried the feature on the enterprise VM and it works: close it."""
+    def verify(self, task_id: str | None, evidence: str, *, by: str = "owner",
+               where: str = "vm") -> Task:
+        """The owner tried the feature (on the enterprise VM, or ``where``) and it works: close it."""
         task = self._awaiting_vm(task_id)
-        result = {"at": _now(), "by": by, "passed": True, "evidence": evidence}
+        result = {"at": _now(), "by": by, "passed": True, "where": where, "evidence": evidence}
         task.vm_results.append(result)
         self.state.record_decision(task, "vm-verification", result)
-        self.state.audit({"type": "vm_verification", "task": task.id, "passed": True, "by": by})
-        task.transition(TaskState.COMPLETED, f"verified on the VM by {by}")
+        self.state.audit({"type": "vm_verification", "task": task.id, "passed": True, "by": by,
+                          "where": where})
+        task.transition(TaskState.COMPLETED, f"verified on {_place(where)} by {by}")
         self.state.save(task)
         return task
 
-    def reopen(self, task_id: str | None, failure: str, *, by: str = "owner") -> Task:
-        """The VM test failed: feed what failed back into the fix loop."""
+    def reopen(self, task_id: str | None, failure: str, *, by: str = "owner",
+               where: str = "vm") -> Task:
+        """The owner's test failed: feed what failed back into the fix loop."""
         task = self._awaiting_vm(task_id)
-        result = {"at": _now(), "by": by, "passed": False, "evidence": failure}
+        result = {"at": _now(), "by": by, "passed": False, "where": where, "evidence": failure}
         task.vm_results.append(result)
         self.state.record_decision(task, "vm-verification", result)
-        self.state.audit({"type": "vm_verification", "task": task.id, "passed": False, "by": by})
-        task.pending_feedback = ("The feature failed when the owner tried it on the enterprise VM "
-                                 f"(Themis and the Harness together):\n\n{failure}")
+        self.state.audit({"type": "vm_verification", "task": task.id, "passed": False, "by": by,
+                          "where": where})
+        context = ("on the enterprise VM (Themis and the Harness together)" if where == "vm"
+                   else f"on {where}")
+        task.pending_feedback = f"The feature failed when the owner tried it {context}:\n\n{failure}"
         task.iteration_budget = task.metrics.iterations + self.cfg.workflow.max_iterations
         task.metrics.iterations += 1
-        task.transition(TaskState.FIXING, "VM verification failed; reopened by owner")
+        task.transition(TaskState.FIXING, f"failed on {_place(where)}; reopened by {by}")
         self.state.save(task)
         return self.advance(task)
 
@@ -348,8 +353,52 @@ class Orchestrator:
             else:
                 repo.git.push(repo.cfg.workflow.remote, task.branch, approved=True)
                 notes.append(f"{repo.name}: pushed {task.branch} to {repo.cfg.workflow.remote}")
+        if delivery == "push" and self.cfg.workflow.pull_request:
+            notes += self._open_pull_requests(task)
         task.approval = None
         self._finish(task, "; ".join(notes))
+
+    def _open_pull_requests(self, task: Task) -> list[str]:
+        """One PR per pushed repository, under the push approval. A failure
+        records a compare link instead of failing the delivered task."""
+        notes = []
+        for repo in self._involved(task):
+            base = self._base_of(task, repo.name)
+            try:
+                url = repo.git.open_pull_request(
+                    self.cfg.workflow.pr_tool, base=base, branch=task.branch,
+                    title=self._pr_title(task), body=self._pr_body(task, repo.name), approved=True)
+                notes.append(f"{repo.name}: PR {url}")
+            except (GitError, OSError) as e:
+                gh_repo = repo.git.github_repo(repo.cfg.workflow.remote)
+                url = compare_url(gh_repo, base, task.branch) if gh_repo else ""
+                self.state.audit({"type": "pull_request_failed", "task": task.id,
+                                  "repo": repo.name, "error": str(e)[:300]})
+                notes.append(f"{repo.name}: PR not opened ({str(e)[:120]}); "
+                             + (f"open it at {url}" if url else "open it by hand"))
+            if url:
+                task.pull_requests[repo.name] = url
+        return notes
+
+    def _pr_title(self, task: Task) -> str:
+        summary = (self._spec(task).summary or task.request).strip().splitlines()[0]
+        return summary if len(summary) <= 72 else summary[:69].rstrip() + "..."
+
+    def _pr_body(self, task: Task, repo_name: str) -> str:
+        spec = self._spec(task)
+        lines = ["## Summary", "", spec.summary.strip(), "", "## Request", "", task.request.strip(), ""]
+        others = [r.name for r in self._involved(task) if r.name != repo_name]
+        if others:
+            lines += ["## Same feature in other repositories", ""]
+            lines += [f"- {name}: branch `{task.branch}`" for name in others] + [""]
+        lines += ["## Acceptance criteria", ""]
+        lines += [f"- [ ] {c}" for c in spec.acceptance_criteria] or ["- (none)"]
+        lines += ["", "## Evidence", "",
+                  f"- chopin task `{task.id}`: design approved by the owner; gate green; "
+                  "code, security and final reviews accepted.",
+                  "- Owner verification (VM or live proof): pending — recorded with `chopin verify`.",
+                  "", "Generated by chopin", ""]
+        return "\n".join(lines)
 
     def _finish(self, task: Task, note: str) -> None:
         if self.cfg.workflow.verification == "vm":
@@ -505,6 +554,9 @@ class Orchestrator:
             heads[repo.name] = repo.git.head()
             lines.append(f"| {repo.name} | `{task.branch}` | `{self._base_of(task, repo.name)}` | "
                          f"`{heads[repo.name][:12]}` |")
+        if task.pull_requests:
+            lines += ["", "## Pull requests", ""]
+            lines += [f"- {name}: {url}" for name, url in task.pull_requests.items()]
         lines += ["", "## Build and run", ""]
         n = 1
         for repo in self._involved(task):
@@ -520,7 +572,8 @@ class Orchestrator:
         lines += ["", "## What to check (acceptance criteria)", ""]
         lines += [f"- [ ] {c}" for c in spec.acceptance_criteria] or ["- (none)"]
         lines += ["", "## Record the result", "",
-                  "- Works: `chopin verify -m \"<what you ran and saw>\"`",
+                  "- Works: `chopin verify -m \"<what you ran and saw>\"` "
+                  "(add `--where mac` when the check ran on the laptop, not the VM)",
                   "- Fails: `chopin reopen -m \"<what failed, with output>\"` — goes back to the fix loop", ""]
         return "\n".join(lines)
 
@@ -608,3 +661,7 @@ class _Placeholders(dict):
 
     def __missing__(self, key: str) -> str:
         return f"<{key}: not part of this feature>"
+
+
+def _place(where: str) -> str:
+    return "the enterprise VM" if where == "vm" else where
