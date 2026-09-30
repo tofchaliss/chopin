@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 
 from .config import Repo, RuntimeConfig, load_project, resolve_state_dir
-from .orchestrator import Orchestrator, PreflightError
+from .orchestrator import ARTIFACTS, Orchestrator, PreflightError
 from .state import StateManager, Task, TaskState
 
 EXIT = {
@@ -73,8 +73,14 @@ def load_repos(workspace: Path, config: Path | None, project: Path | None,
     return [Repo(cfg.target.name or workspace.name, workspace, cfg)]
 
 
-def render(task: Task) -> str:
+def render(task: Task, state: StateManager | None = None) -> str:
+    """Human-readable task record. With ``state``, it also prints where the
+    artifacts are, so the design and the VM checklist can be opened directly."""
     m = task.metrics
+
+    def artifact(rel: str) -> str:
+        return str(state.artifact_path(task.id, rel)) if state else f"artifacts/{task.id}/{rel}"
+
     lines = [
         f"task:       {task.id}",
         f"request:    {task.request}",
@@ -88,6 +94,10 @@ def render(task: Task) -> str:
         f"{m.openai_input_tokens}/{m.openai_output_tokens}",
         f"commits:    {', '.join(c[:10] for c in task.commits) or '-'}",
     ]
+    if state:
+        lines.append(f"artifacts:  {state.artifact_path(task.id, '')}")
+    if task.spec:
+        lines.append(f"design:     {artifact(ARTIFACTS['architecture'])}")
     if task.approval and task.approval.granted is None:
         lines.append(f"APPROVAL NEEDED: {task.approval.action} ({task.approval.reason})")
         lines.append("  -> chopin approve | chopin reject")
@@ -97,17 +107,18 @@ def render(task: Task) -> str:
         lines.append(f"design rounds: {len(task.design_rounds)} (previous designs kept as "
                      "openai/architecture-rN.md)")
     if task.approval and task.approval.granted is None and task.approval.action == "approve_design":
+        lines.append(f"  -> read the design: cat {artifact(ARTIFACTS['architecture'])}")
         lines.append("  -> or discuss it: chopin revise -m \"<your feedback>\"")
     if task.state is TaskState.AWAITING_VM_VERIFICATION:
-        lines.append("AWAITING VM VERIFICATION: follow artifacts/<task>/vm-checklist.md in the state "
-                     "directory, then `chopin verify -m \"...\"` or `chopin reopen -m \"...\"`")
+        lines.append(f"AWAITING VM VERIFICATION: follow {artifact(ARTIFACTS['vm'])}, "
+                     "then `chopin verify -m \"...\"` or `chopin reopen -m \"...\"`")
     for v in task.vm_results[-3:]:
         lines.append(f"{v.get('where', 'vm')} {'PASS' if v['passed'] else 'FAIL'} {v['at']} by {v['by']}: "
                      f"{v['evidence'][:200]}")
     for name, url in task.pull_requests.items():
         lines.append(f"PR {name}: {url}")
     if task.state is TaskState.ESCALATED:
-        lines.append("ESCALATED: review artifacts/ and decisions/ in the state directory, then "
+        lines.append(f"ESCALATED: review {artifact('')} (reviews: openai/, test results: claude/), then "
                      "`chopin resume -g \"...\"` or `chopin abort`")
         if task.pending_feedback:
             lines.append("last feedback:\n" + task.pending_feedback[:2000])
@@ -200,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
         except RuntimeError as e:
             print(f"error: {e}", file=sys.stderr)
             return 2
-    print(json.dumps(task.to_dict(), indent=2) if args.json else render(task))
+    print(json.dumps(task.to_dict(), indent=2) if args.json else render(task, state))
     return EXIT.get(task.state, 0)
 
 
