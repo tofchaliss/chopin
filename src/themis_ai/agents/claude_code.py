@@ -84,7 +84,8 @@ class ClaudeCodeImplementer:
             proc = self.runner(self.build_command(prompt, session_id, extra_dirs), self.workspace,
                                self.cfg.timeout_seconds, env or {})
         except subprocess.TimeoutExpired:
-            return ImplementationResult(False, f"Claude Code timed out after {self.cfg.timeout_seconds}s")
+            return ImplementationResult(False, f"Claude Code timed out after {self.cfg.timeout_seconds}s",
+                                        timed_out=True)
         except FileNotFoundError:
             return ImplementationResult(False, f"Claude Code binary not found: {self.cfg.binary}")
         return self._parse(proc)

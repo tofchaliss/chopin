@@ -71,7 +71,7 @@ class ClaudeConfig:
     resume_session: bool = True
     # Optional MCP config handed to Claude Code (e.g. one that starts themis-ai-mcp).
     mcp_config: str | None = None
-    timeout_seconds: int = 1800
+    timeout_seconds: int = 3600
 
 
 @dataclass

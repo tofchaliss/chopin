@@ -161,6 +161,19 @@ def test_agent_failure_is_recorded_and_retryable(build):
     assert task.state is TaskState.COMPLETED
 
 
+def test_timed_out_implementation_resumes_from_partial_work(build, repo):
+    orch, _, impl = build(outputs=["TIMEOUT", "done"])
+    task = orch.start("Implement it")
+    assert task.state is TaskState.FAILED
+    assert (repo / "feature.txt").read_text() == "partial\n"
+
+    task = orch.resume(task.id)
+    assert task.state is TaskState.COMPLETED
+    assert impl.calls[0]["feedback"] is None
+    assert "Previous attempt was cut off" in impl.calls[1]["feedback"]
+    assert task.pending_feedback is None
+
+
 def test_empty_change_is_not_reviewed(build, repo):
     orch, architect, _ = build(outputs=["todo", "done"])
     config_test = orch.cfg.tests
