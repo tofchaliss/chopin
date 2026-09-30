@@ -272,6 +272,8 @@ def test_shipped_platform_project_loads(tmp_path, monkeypatch):
     project = Path(__file__).resolve().parent.parent / "config" / "projects" / "themis-platform.yaml"
     repos = load_project(project)
     assert [r.name for r in repos] == ["themis-ai-runtime", "themis"]
+    base = project.resolve().parents[3]          # the folder chopin is cloned into
+    assert [r.root for r in repos] == [base / "themis-ai-runtime", base / "themis"]
     primary = repos[0].cfg
     assert primary.workflow.delivery == "push"
     assert primary.workflow.verification == "vm"

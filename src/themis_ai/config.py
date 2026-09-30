@@ -285,7 +285,10 @@ def load_project(path: Path) -> list[Repo]:
         raise ValueError(f"project {name}: no repos")
     repos: list[Repo] = []
     for entry in entries:
-        root = Path(os.path.expandvars(str(entry["path"]))).expanduser().resolve()
+        root = Path(os.path.expandvars(str(entry["path"]))).expanduser()
+        # A relative path is relative to the project file, so a project can name
+        # checkouts that sit beside chopin's own, wherever they are cloned.
+        root = (root if root.is_absolute() else path.parent / root).resolve()
         cfg_path = Path(entry["config"])
         cfg_path = cfg_path if cfg_path.is_absolute() else path.parent / cfg_path
         cfg = RuntimeConfig.load(root, cfg_path)
