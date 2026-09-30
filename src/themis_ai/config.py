@@ -276,7 +276,7 @@ class Repo:
     cfg: RuntimeConfig
 
 
-def load_project(path: Path) -> list[Repo]:
+def load_project(path: Path, primary: str | None = None) -> list[Repo]:
     """Load a feature workspace: several repositories developed together.
 
     The first repository is the primary one; its config drives the workflow
@@ -303,6 +303,13 @@ def load_project(path: Path) -> list[Repo]:
         repos.append(Repo(entry.get("name") or cfg.target.name or root.name, root, cfg))
     if len({r.name for r in repos}) != len(repos):
         raise ValueError(f"project {name}: repository names must be unique")
+    if primary:
+        # A feature can lead in another repository of the project (e.g. a
+        # Themis-only milestone): it becomes primary and takes the overrides.
+        chosen = [r for r in repos if r.name == primary]
+        if not chosen:
+            raise ValueError(f"project {name}: no repository named {primary!r}")
+        repos = chosen + [r for r in repos if r.name != primary]
     primary = repos[0].cfg
     _merge(primary, data.get("overrides") or {})
     if not primary.workflow.state_dir:
