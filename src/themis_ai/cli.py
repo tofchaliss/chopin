@@ -1,12 +1,18 @@
-"""Goals & control interface.
+"""Goals & control interface (``chopin``; ``themis-ai`` is the same command).
 
-    themis-ai run "Implement KN-MODULE-4"   start a task and drive it
-    themis-ai status [TASK]                 state, metrics, pending approval
-    themis-ai approve [TASK] [-m COMMENT]   grant the pending approval, continue
-    themis-ai reject  [TASK] [-m COMMENT]   deny the pending approval, continue
-    themis-ai resume  [TASK] [-g GUIDANCE]  continue after escalation / failure
-    themis-ai abort   [TASK]                stop; keep the branch, return to base
-    themis-ai history                       all tasks
+    chopin -p PROJECT run "Add retry to outward actions" [--base themis=feat/x]
+                                         start a feature and drive it
+    chopin status [TASK]                 state, metrics, pending approval
+    chopin approve [TASK] [-m COMMENT]   grant the pending approval, continue
+    chopin reject  [TASK] [-m COMMENT]   deny the pending approval, continue
+    chopin resume  [TASK] [-g GUIDANCE]  continue after escalation / failure
+    chopin verify  [TASK] -m EVIDENCE    it works on the enterprise VM: close it
+    chopin reopen  [TASK] -m FAILURE     it failed on the VM: back to the fix loop
+    chopin abort   [TASK]                stop; keep the branches, return to base
+    chopin history                       all tasks
+
+Select the repositories with -p (a project: several repositories developed
+together, e.g. config/projects/themis-platform.yaml) or with -c/-w (one).
 """
 
 from __future__ import annotations
@@ -16,7 +22,7 @@ import json
 import sys
 from pathlib import Path
 
-from .config import RuntimeConfig, resolve_state_dir
+from .config import Repo, RuntimeConfig, load_project, resolve_state_dir
 from .orchestrator import Orchestrator, PreflightError
 from .state import StateManager, Task, TaskState
 
@@ -27,21 +33,40 @@ EXIT = {
     TaskState.FAILED: 12,
     TaskState.REJECTED: 13,
     TaskState.ABORTED: 14,
+    TaskState.AWAITING_VM_VERIFICATION: 15,
 }
 
 
-def build_orchestrator(workspace: Path, config_path: Path | None) -> Orchestrator:
+def build_orchestrator(repos: list[Repo]) -> Orchestrator:
     from .agents.claude_code import ClaudeCodeImplementer
     from .agents.openai_agent import OpenAIArchitectReviewer
 
-    cfg = RuntimeConfig.load(workspace, config_path)
+    primary, others = repos[0], repos[1:]
+    cfg = primary.cfg
     mcp = Path(cfg.claude.mcp_config) if cfg.claude.mcp_config else None
     return Orchestrator(
-        workspace, cfg,
-        architect=OpenAIArchitectReviewer(cfg.openai, target_notes=cfg.target.notes()),
-        implementer=ClaudeCodeImplementer(cfg.claude, workspace, mcp_config=mcp),
+        primary.root, cfg,
+        architect=OpenAIArchitectReviewer(cfg.openai, target_notes=combined_notes(repos)),
+        implementer=ClaudeCodeImplementer(cfg.claude, primary.root, mcp_config=mcp),
         on_event=lambda msg, task: print(f"[{task.id}] {msg}", file=sys.stderr, flush=True),
+        others=others,
     )
+
+
+def combined_notes(repos: list[Repo]) -> str:
+    """Each repository's architecture notes, labelled; a single repo's notes as is."""
+    if len(repos) == 1:
+        return repos[0].cfg.target.notes()
+    return "\n\n".join(f"# Repository: {r.name}{' (primary)' if i == 0 else ''}\n\n"
+                        + (r.cfg.target.notes() or "(no architecture notes configured)")
+                        for i, r in enumerate(repos))
+
+
+def load_repos(workspace: Path, config: Path | None, project: Path | None) -> list[Repo]:
+    if project is not None:
+        return load_project(project)
+    cfg = RuntimeConfig.load(workspace, config)
+    return [Repo(cfg.target.name or workspace.name, workspace, cfg)]
 
 
 def render(task: Task) -> str:
@@ -50,7 +75,10 @@ def render(task: Task) -> str:
         f"task:       {task.id}",
         f"request:    {task.request}",
         f"state:      {task.state.value}",
-        f"branch:     {task.branch} (base {task.base_branch})",
+        f"branch:     {task.branch} (base {task.base_branch})"
+        + (f"   repo {task.repo}" if task.repo else ""),
+        *[f"            {w.name}: {w.branch} (base {w.base_branch}), "
+          f"commits {', '.join(c[:10] for c in w.commits) or '-'}" for w in task.secondary.values()],
         f"iterations: {m.iterations}/{task.iteration_budget}   test runs: {m.test_runs}",
         f"cost:       claude ${m.claude_cost_usd:.2f}   openai tokens in/out "
         f"{m.openai_input_tokens}/{m.openai_output_tokens}",
@@ -58,10 +86,15 @@ def render(task: Task) -> str:
     ]
     if task.approval and task.approval.granted is None:
         lines.append(f"APPROVAL NEEDED: {task.approval.action} ({task.approval.reason})")
-        lines.append("  -> themis-ai approve | themis-ai reject")
+        lines.append("  -> chopin approve | chopin reject")
+    if task.state is TaskState.AWAITING_VM_VERIFICATION:
+        lines.append("AWAITING VM VERIFICATION: follow artifacts/<task>/vm-checklist.md in the state "
+                     "directory, then `chopin verify -m \"...\"` or `chopin reopen -m \"...\"`")
+    for v in task.vm_results[-3:]:
+        lines.append(f"vm {'PASS' if v['passed'] else 'FAIL'} {v['at']} by {v['by']}: {v['evidence'][:200]}")
     if task.state is TaskState.ESCALATED:
         lines.append("ESCALATED: review artifacts/ and decisions/ in the state directory, then "
-                     "`themis-ai resume -g \"...\"` or `themis-ai abort`")
+                     "`chopin resume -g \"...\"` or `chopin abort`")
         if task.pending_feedback:
             lines.append("last feedback:\n" + task.pending_feedback[:2000])
     if task.last_error:
@@ -73,19 +106,27 @@ def render(task: Task) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="themis-ai", description="Themis autonomous multi-agent runtime",
-                                formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
+    p = argparse.ArgumentParser(prog="chopin", description="chopin: orchestrated development of Themis "
+                                "and its AI Harness", formatter_class=argparse.RawDescriptionHelpFormatter,
+                                epilog=__doc__)
+    p.add_argument("-p", "--project", type=Path,
+                   help="project file: several repositories developed together (overrides -w/-c)")
     p.add_argument("-w", "--workspace", type=Path, default=Path.cwd(), help="repository root (default: cwd)")
     p.add_argument("-c", "--config", type=Path, help="config file (default: <workspace>/.themis-ai.yaml)")
     p.add_argument("--json", action="store_true", help="print the task record as JSON")
     sub = p.add_subparsers(dest="cmd", required=True)
     run = sub.add_parser("run", help="start a new task")
     run.add_argument("request", nargs="+")
-    for name in ("status", "approve", "reject", "resume", "abort"):
+    run.add_argument("--base", action="append", default=[], metavar="REPO=BRANCH",
+                     help="base branch for a repository (repeatable), e.g. themis=feat/harness-integration")
+    for name in ("status", "approve", "reject", "resume", "abort", "verify", "reopen"):
         sp = sub.add_parser(name)
         sp.add_argument("task", nargs="?")
         if name in ("approve", "reject"):
             sp.add_argument("-m", "--comment")
+        if name in ("verify", "reopen"):
+            sp.add_argument("-m", "--message", required=True,
+                            help="what you ran on the VM and what you saw")
         if name == "resume":
             sp.add_argument("-g", "--guidance")
     sub.add_parser("history")
@@ -93,11 +134,12 @@ def main(argv: list[str] | None = None) -> int:
     ws = args.workspace.resolve()
 
     try:
-        cfg = RuntimeConfig.load(ws, args.config)
-    except (FileNotFoundError, ValueError) as e:
+        repos = load_repos(ws, args.config, args.project)
+        bases = dict(b.split("=", 1) for b in getattr(args, "base", []))
+    except (FileNotFoundError, ValueError, KeyError) as e:
         print(f"config: {e}", file=sys.stderr)
         return 2
-    state = StateManager(resolve_state_dir(cfg, ws))
+    state = StateManager(resolve_state_dir(repos[0].cfg, repos[0].root))
     if args.cmd == "history":
         for row in state.history():
             print(f"{row['id']}  {row['state']:<18} {row['branch']:<50} {row['request'][:60]}")
@@ -105,10 +147,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "status":
         task = state.load(args.task)
     else:
-        orch = build_orchestrator(ws, args.config)
+        orch = build_orchestrator(repos)
         try:
             if args.cmd == "run":
-                task = orch.start(" ".join(args.request))
+                task = orch.start(" ".join(args.request), bases=bases)
+            elif args.cmd == "verify":
+                task = orch.verify(args.task, args.message)
+            elif args.cmd == "reopen":
+                task = orch.reopen(args.task, args.message)
             elif args.cmd in ("approve", "reject"):
                 task = orch.decide(args.task, args.cmd == "approve", comment=args.comment)
             elif args.cmd == "resume":
@@ -117,6 +163,9 @@ def main(argv: list[str] | None = None) -> int:
                 task = orch.abort(args.task)
         except PreflightError as e:
             print(f"preflight: {e}", file=sys.stderr)
+            return 2
+        except RuntimeError as e:
+            print(f"error: {e}", file=sys.stderr)
             return 2
     print(json.dumps(task.to_dict(), indent=2) if args.json else render(task))
     return EXIT.get(task.state, 0)

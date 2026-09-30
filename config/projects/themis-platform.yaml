@@ -1,0 +1,25 @@
+# The Themis platform as one feature workspace: features are developed mainly in
+# the AI Harness (themis-ai-runtime) and, when a feature needs it, in Themis too.
+#
+#   chopin -p config/projects/themis-platform.yaml run "..." [--base themis=feat/harness-integration]
+#
+# The first repository is the primary one: its target config drives the
+# workflow. The architect sees both repositories and names in the spec which
+# ones the feature changes; a secondary repository gets a branch only then.
+# Task state: $CHOPIN_HOME/themis-platform or ~/.chopin/themis-platform.
+name: themis-platform
+repos:
+  - name: themis-ai-runtime
+    path: ~/src/themis-ai-runtime
+    config: ../targets/themis-ai-runtime.yaml
+  - name: themis
+    path: ~/src/themis
+    config: ../targets/themis.yaml
+overrides:
+  workflow:
+    # The VM pulls from GitHub, so a finished feature's branches are pushed —
+    # all of them together, after the owner approves the push.
+    delivery: push
+    # Every design waits for the owner (the Harness is the primary target, DAY-0).
+    require_design_approval: true
+    verification: vm

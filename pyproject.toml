@@ -19,6 +19,7 @@ all = ["openai>=1.60", "mcp>=2"]
 dev = ["pytest>=8"]
 
 [project.scripts]
+chopin = "themis_ai.cli:main"
 themis-ai = "themis_ai.cli:main"
 themis-ai-mcp = "themis_ai.mcp_server:main"
 

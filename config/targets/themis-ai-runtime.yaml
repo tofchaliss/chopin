@@ -7,6 +7,10 @@ target:
   name: themis-ai-runtime
   # Architecture rules appended to every OpenAI role (architect + reviewers).
   notes_file: themis-ai-runtime.md
+  go_module_dir: src/harness
+  vm_steps:
+    - "`git fetch origin && git checkout {branch}` (head `{sha}`)"
+    - "`go build -o bin/ ./src/harness/cmd/...` from the repository root, then run the Harness as the feature needs"
 tests:
   # Mirrors the repository's CI (.github/workflows/ci.yml), run from the repo
   # root through go.work: gofmt clean, vet, test, build.
@@ -37,6 +41,9 @@ workflow:
   # the owner's approval (and the repo's THEMIS_PUSH_APPROVED marker), so
   # delivery stays local.
   delivery: commit
+  # A feature is done only after the owner tries it on the enterprise VM with
+  # Themis and the Harness together (chopin verify / chopin reopen).
+  verification: vm
   # Task state and agent artifacts: outside the checkout. Empty = ~/.chopin/themis-ai-runtime.
   state_dir: ""
   # Architect context, in priority order (truncated at context_budget_chars).

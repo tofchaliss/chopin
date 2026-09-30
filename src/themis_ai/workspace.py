@@ -8,6 +8,7 @@ Both paths pass through the same guardrails.
 from __future__ import annotations
 
 import fnmatch
+import os
 import subprocess
 import time
 from dataclasses import asdict, dataclass
@@ -89,15 +90,17 @@ class Workspace:
         return out.splitlines()[:limit]
 
     # -- checks ------------------------------------------------------------
-    def run_check(self, name: str, check: CheckConfig, *, actor: str = "orchestrator") -> CheckResult:
-        action = "run_tests" if name == "tests" else "run_lint"
+    def run_check(self, name: str, check: CheckConfig, *, actor: str = "orchestrator",
+                  env: dict[str, str] | None = None) -> CheckResult:
+        action = "run_tests" if name.endswith("tests") else "run_lint"
         self.guard.enforce(action, actor=actor)
         if not check.command:
             return CheckResult(name, [], True, None, 0.0, "", skipped=True)
         start = time.monotonic()
         try:
             proc = subprocess.run(check.command, cwd=self.root, capture_output=True, text=True,
-                                  timeout=check.timeout_seconds)
+                                  timeout=check.timeout_seconds,
+                                  env={**os.environ, **env} if env else None)
             output, code = proc.stdout + proc.stderr, proc.returncode
         except subprocess.TimeoutExpired as e:
             output = (e.stdout or "") if isinstance(e.stdout, str) else ""

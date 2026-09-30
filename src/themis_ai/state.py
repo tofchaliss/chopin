@@ -37,6 +37,9 @@ class TaskState(str, Enum):
     FINAL_REVIEW = "FINAL_REVIEW"
     APPROVED = "APPROVED"
     COMMITTED = "COMMITTED"
+    # Code delivered; the owner tries the feature on the enterprise VM (Themis +
+    # Harness together). Only the owner's verdict moves it on.
+    AWAITING_VM_VERIFICATION = "AWAITING_VM_VERIFICATION"
     COMPLETED = "COMPLETED"
     # Control states
     AWAITING_APPROVAL = "AWAITING_APPROVAL"
@@ -62,7 +65,9 @@ TRANSITIONS: dict[TaskState, set[TaskState]] = {
     TaskState.SECURITY_REVIEW: {TaskState.FINAL_REVIEW, TaskState.APPROVED, TaskState.FIXING},
     TaskState.FINAL_REVIEW: {TaskState.APPROVED, TaskState.FIXING},
     TaskState.APPROVED: {TaskState.COMMITTED},
-    TaskState.COMMITTED: {TaskState.COMPLETED},
+    TaskState.COMMITTED: {TaskState.COMPLETED, TaskState.AWAITING_VM_VERIFICATION},
+    # verify -> COMPLETED; reopen (the VM test failed) -> FIXING.
+    TaskState.AWAITING_VM_VERIFICATION: {TaskState.COMPLETED, TaskState.FIXING},
     # Leaving a control state returns to the state recorded in `resume_state`.
     TaskState.AWAITING_APPROVAL: set(TaskState) - {TaskState.NEW},
     TaskState.ESCALATED: {TaskState.FIXING, TaskState.ABORTED, TaskState.REJECTED},
@@ -115,6 +120,17 @@ class Metrics:
 
 
 @dataclass
+class RepoWork:
+    """A secondary repository touched by a multi-repo feature."""
+
+    name: str
+    workspace: str
+    branch: str
+    base_branch: str
+    commits: list[str] = field(default_factory=list)
+
+
+@dataclass
 class Task:
     id: str
     request: str
@@ -135,17 +151,25 @@ class Task:
     approval: PendingApproval | None = None
     last_error: str | None = None
     commits: list[str] = field(default_factory=list)
+    # Name of the primary repository (the target of the loaded config).
+    repo: str = ""
+    # Secondary repositories this feature changes, by name (multi-repo features).
+    secondary: dict[str, RepoWork] = field(default_factory=dict)
+    # Base branch per secondary repository, when not its configured default.
+    base_overrides: dict[str, str] = field(default_factory=dict)
+    # The owner's VM verdict (verify/reopen), latest last.
+    vm_results: list[dict[str, Any]] = field(default_factory=list)
     transitions: list[Transition] = field(default_factory=list)
     metrics: Metrics = field(default_factory=Metrics)
 
     @classmethod
     def create(cls, request: str, base_branch: str, branch_prefix: str,
-               iteration_budget: int = 3) -> "Task":
+               iteration_budget: int = 3, repo: str = "") -> "Task":
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         task_id = f"{stamp}-{uuid.uuid4().hex[:6]}"
         branch = f"{branch_prefix}{_slug(request)}-{task_id[-6:]}"
         return cls(id=task_id, request=request, branch=branch, base_branch=base_branch,
-                   iteration_budget=iteration_budget)
+                   iteration_budget=iteration_budget, repo=repo)
 
     @property
     def is_terminal(self) -> bool:
@@ -173,6 +197,7 @@ class Task:
         d["approval"] = PendingApproval(**d["approval"]) if d.get("approval") else None
         d["transitions"] = [Transition(**t) for t in d.get("transitions", [])]
         d["metrics"] = Metrics(**d.get("metrics", {}))
+        d["secondary"] = {k: RepoWork(**v) for k, v in (d.get("secondary") or {}).items()}
         return cls(**d)
 
 

@@ -93,7 +93,7 @@ def test_config_loads_yaml_and_rejects_unknown_keys(tmp_path):
 def test_claude_command_and_parse(tmp_path):
     seen = {}
 
-    def runner(cmd, cwd, timeout):
+    def runner(cmd, cwd, timeout, env):
         seen["cmd"] = cmd
         out = json.dumps({"type": "result", "result": "implemented", "is_error": False,
                           "session_id": "abc", "total_cost_usd": 1.25,
@@ -111,7 +111,7 @@ def test_claude_command_and_parse(tmp_path):
 
 
 def test_claude_error_result(tmp_path):
-    runner = lambda cmd, cwd, t: subprocess.CompletedProcess(cmd, 1, "", "auth failed")  # noqa: E731
+    runner = lambda cmd, cwd, t, env: subprocess.CompletedProcess(cmd, 1, "", "auth failed")  # noqa: E731
     res = ClaudeCodeImplementer(ClaudeConfig(), tmp_path, runner=runner).implement("x", make_spec())
     assert not res.ok and "auth failed" in res.summary
 

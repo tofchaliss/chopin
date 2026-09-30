@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Protocol
 
 SEVERITIES = ["info", "low", "medium", "high", "critical"]
@@ -39,14 +40,17 @@ class Spec:
     test_plan: list[str]
     risks: list[str] = field(default_factory=list)
     open_questions: list[str] = field(default_factory=list)
+    # Repositories the change touches (multi-repo features); empty = primary only.
+    repositories: list[str] = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)
 
     def to_markdown(self) -> str:
         def bullets(items: list[str]) -> str:
             return "\n".join(f"- {i}" for i in items) or "- (none)"
 
+        repos = f"## Repositories\n\n{bullets(self.repositories)}\n\n" if self.repositories else ""
         return (
-            f"# Implementation specification\n\n## Summary\n\n{self.summary}\n\n"
+            f"# Implementation specification\n\n## Summary\n\n{self.summary}\n\n{repos}"
             f"## Requirements\n\n{bullets(self.requirements)}\n\n"
             f"## Design\n\n{self.design}\n\n"
             f"## Files to change\n\n{bullets(self.files_to_change)}\n\n"
@@ -116,4 +120,5 @@ class Implementer(Protocol):
     """Claude Code side: implementation, tests, fixes, documentation."""
 
     def implement(self, request: str, spec: Spec, *, feedback: str | None = None,
-                  session_id: str | None = None) -> ImplementationResult: ...
+                  session_id: str | None = None, extra_dirs: list[Path] | None = None,
+                  env: dict[str, str] | None = None) -> ImplementationResult: ...
