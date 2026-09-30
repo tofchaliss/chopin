@@ -97,7 +97,8 @@ class Orchestrator:
                                              LocalGit(root, guard), Workspace(root, guard))
 
     # ------------------------------------------------------------------ API
-    def start(self, request: str, bases: dict[str, str] | None = None) -> Task:
+    def start(self, request: str, bases: dict[str, str] | None = None, *,
+              dry_run: bool = False) -> Task:
         """Task planner entry point: create a task on its own branch and run it.
 
         ``bases`` overrides the base branch per repository name (e.g. Themis work
@@ -112,6 +113,7 @@ class Orchestrator:
         self._preflight(base)
         task = Task.create(request, base, wf.branch_prefix, wf.max_iterations, repo=self.primary)
         task.base_overrides = bases
+        task.dry_run = dry_run
         self.git.create_branch(task.branch, task.base_branch)
         self.state.save(task)
         self._emit(f"created task {task.id} on branch {task.branch}", task)
@@ -149,6 +151,27 @@ class Orchestrator:
                           "granted": granted, "by": by, "comment": comment})
         self.state.save(task)
         return self.resume(task.id)
+
+    def revise(self, task_id: str | None, feedback: str, *, by: str = "owner") -> Task:
+        """Design discussion: send the owner's feedback on the proposed design back
+        to the architect for a new round. Only while the design awaits approval."""
+        task = self.state.load(task_id)
+        if (task.state is not TaskState.AWAITING_APPROVAL or task.approval is None
+                or task.approval.action != "approve_design"):
+            raise RuntimeError(f"task {task.id} has no design awaiting approval (state {task.state.value})")
+        round_no = len(task.design_rounds) + 1
+        entry = {"round": round_no, "at": _now(), "by": by, "feedback": feedback}
+        task.design_rounds.append(entry)
+        self.state.record_decision(task, "design-revision", entry)
+        self.state.audit({"type": "design_revision", "task": task.id, "round": round_no, "by": by})
+        # Keep every proposed design; the architect then writes the next one.
+        prior = self.state.read_artifact(task.id, ARTIFACTS["architecture"])
+        if prior:
+            self.state.write_artifact(task.id, f"openai/architecture-r{round_no - 1}.md", prior)
+        task.approval = None
+        task.transition(TaskState.ANALYZING, f"design revision {round_no} requested by {by}")
+        self.state.save(task)
+        return self.advance(task)
 
     def abort(self, task_id: str | None = None, reason: str = "aborted by owner") -> Task:
         """Stop a task and return to the base branch. The feature branch is kept."""
@@ -234,7 +257,7 @@ class Orchestrator:
             context = "\n\n".join(
                 f"# Repository: {name}{' (primary)' if name == self.primary else ''}\n\n"
                 + self._repo_context(task.request, repo) for name, repo in self.repos.items())
-        spec = self.architect.design(task.request, context)
+        spec = self.architect.design(self._design_request(task), context)
         self._account(task, spec.usage, "openai")
         unknown = [r for r in spec.repositories if r not in self.repos]
         if unknown:
@@ -246,6 +269,18 @@ class Orchestrator:
         self._write_artifact(task, "architecture", spec.to_markdown())
         self.state.record_decision(task, "architecture", task.spec)
         task.transition(TaskState.DESIGN_READY, spec.summary[:200])
+
+    def _design_request(self, task: Task) -> str:
+        """The request, plus — in a design discussion — the current design and
+        every round of the owner's feedback, so the architect revises rather
+        than starting over."""
+        if not task.design_rounds or not task.spec:
+            return task.request
+        rounds = "\n\n".join(f"### Round {r['round']}\n\n{r['feedback']}" for r in task.design_rounds)
+        return (f"{task.request}\n\n## Design under discussion (your previous specification)\n\n"
+                f"{self._spec(task).to_markdown()}\n\n## The owner's feedback on it\n\n{rounds}\n\n"
+                "Produce a revised specification that addresses every point of the feedback. "
+                "Where you disagree, keep your position and say why under risks.")
 
     def _design_gate(self, task: Task) -> None:
         wf = self.cfg.workflow
@@ -331,6 +366,11 @@ class Orchestrator:
 
     def _deliver(self, task: Task) -> None:
         delivery = self.cfg.workflow.delivery
+        if task.dry_run:
+            branches = ", ".join(f"{r.name}:{task.branch}" for r in self._involved(task))
+            task.transition(TaskState.COMPLETED, f"dry run: reviewed and committed on local branches "
+                                                 f"({branches}); nothing pushed")
+            return
         if delivery == "commit":
             self._finish(task, f"committed on {task.branch}")
             return

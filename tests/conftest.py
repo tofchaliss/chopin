@@ -45,9 +45,11 @@ class FakeArchitect:
         self.spec = spec or make_spec()
         self.reviews = {k: list(v) for k, v in (reviews or {}).items()}
         self.contexts: list[str] = []
+        self.requests: list[str] = []
         self.diffs: list[tuple[ReviewKind, str]] = []
 
     def design(self, request, repo_context):
+        self.requests.append(request)
         self.contexts.append(repo_context)
         return self.spec
 

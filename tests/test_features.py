@@ -449,3 +449,101 @@ def test_cli_verify_where(tmp_path, monkeypatch, platform):
     cfg.write_text(f"target:\n  name: runtime\nworkflow:\n  state_dir: {state}\n")
     assert cli.main(["-c", str(cfg), "-w", str(runtime), "verify", task.id, "-m", "ok", "--where", "mac"]) == 0
     assert orch.state.load(task.id).vm_results[-1]["where"] == "mac"
+
+
+# -- design discussion, dry run, and leading in another repository ------------
+def test_design_discussion_revises_until_approved(platform):
+    _, _, state, build = platform
+    orch, architect, impl = build(repositories=("runtime",))
+    orch.cfg.workflow.require_design_approval = True
+    task = orch.start("Explicit write scopes (N-M0)")
+    assert task.state is TaskState.AWAITING_APPROVAL and task.approval.action == "approve_design"
+
+    task = orch.revise(task.id, "Retire AuthorizeWrite; product:<id> must be confined to its Findings")
+    assert task.state is TaskState.AWAITING_APPROVAL and task.approval.action == "approve_design"
+    assert len(architect.requests) == 2
+    second = architect.requests[1]
+    assert "Design under discussion" in second and "Make feature.txt say done" in second
+    assert "Round 1" in second and "Retire AuthorizeWrite" in second
+    assert impl.calls == []  # nothing is built during the discussion
+
+    task = orch.revise(task.id, "Also add a test per write route x scope")
+    assert "Round 2" in architect.requests[2] and "Round 1" in architect.requests[2]
+    artifacts = state / "artifacts" / task.id / "openai"
+    assert (artifacts / "architecture-r0.md").exists() and (artifacts / "architecture-r1.md").exists()
+    assert [r["round"] for r in task.design_rounds] == [1, 2]
+
+    task = orch.decide(task.id, True, comment="design ok")
+    assert task.state is TaskState.COMPLETED and impl.calls
+
+
+def test_revise_only_while_a_design_awaits_approval(platform):
+    _, _, _, build = platform
+    orch, _, _ = build(repositories=("runtime",))
+    task = orch.start("x")  # no design gate configured: runs straight through
+    with pytest.raises(RuntimeError, match="no design awaiting approval"):
+        orch.revise(task.id, "change it")
+
+
+def test_dry_run_never_pushes_or_asks_to(platform, tmp_path):
+    runtime, core, _, build = platform
+    remotes = [_bare_remote(r, tmp_path) for r in (runtime, core)]
+    orch, _, _ = build(delivery="push", verification="vm")
+    orch.cfg.workflow.pull_request = True
+    task = orch.start("Add retry to outward actions", dry_run=True)
+
+    assert task.state is TaskState.COMPLETED, task.last_error
+    assert "dry run" in task.transitions[-1].note and "nothing pushed" in task.transitions[-1].note
+    assert task.pull_requests == {} and task.approval is None
+    for remote in remotes:
+        assert git(remote, "branch", "--list").strip() == ""
+    # the work is there, on local branches, for the owner to read
+    for repo in (runtime, core):
+        assert git(repo, "show", f"{task.branch}:feature.txt") == "done\n"
+
+
+def test_project_can_lead_in_another_repository(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHOPIN_HOME", str(tmp_path / "home"))
+    targets = tmp_path / "targets"
+    targets.mkdir()
+    (targets / "a.yaml").write_text("target:\n  name: a\n")
+    (targets / "b.yaml").write_text("target:\n  name: b\n")
+    project = tmp_path / "plat.yaml"
+    project.write_text(f"name: plat\nrepos:\n"
+                       f"  - {{name: a, path: {tmp_path / 'ra'}, config: targets/a.yaml}}\n"
+                       f"  - {{name: b, path: {tmp_path / 'rb'}, config: targets/b.yaml}}\n"
+                       f"overrides:\n  workflow:\n    delivery: push\n")
+    repos = load_project(project, "b")
+    assert [r.name for r in repos] == ["b", "a"]
+    assert repos[0].cfg.workflow.delivery == "push" and repos[1].cfg.workflow.delivery == "commit"
+    assert repos[0].cfg.workflow.state_dir == str(tmp_path / "home" / "plat")
+    with pytest.raises(ValueError, match="no repository named"):
+        load_project(project, "zzz")
+
+
+def test_cli_follows_the_primary_a_task_was_started_with(tmp_path, monkeypatch):
+    from themis_ai import cli
+
+    monkeypatch.setenv("CHOPIN_HOME", str(tmp_path / "home"))
+    ra, rb = make_repo(tmp_path / "ra"), make_repo(tmp_path / "rb")
+    targets = tmp_path / "targets"
+    targets.mkdir()
+    for n in ("a", "b"):
+        (targets / f"{n}.yaml").write_text(
+            f"target:\n  name: {n}\ntests:\n  command: [{sys.executable}, -c, 'pass']\n")
+    project = tmp_path / "plat.yaml"
+    project.write_text(f"name: plat\nrepos:\n  - {{name: a, path: {ra}, config: targets/a.yaml}}\n"
+                       f"  - {{name: b, path: {rb}, config: targets/b.yaml}}\n"
+                       "overrides:\n  workflow:\n    require_design_approval: true\n")
+    seen = []
+
+    def fake_build(repos):
+        seen.append([r.name for r in repos])
+        return Orchestrator(repos[0].root, repos[0].cfg, FakeArchitect(), MultiRepoImplementer(repos[0].root),
+                            others=repos[1:])
+
+    monkeypatch.setattr(cli, "build_orchestrator", fake_build)
+    assert cli.main(["-p", str(project), "run", "lead in b", "--primary", "b", "--dry-run"]) == 10
+    assert cli.main(["-p", str(project), "revise", "-m", "narrow it"]) == 10
+    assert cli.main(["-p", str(project), "approve", "-m", "ok"]) == 0
+    assert seen == [["b", "a"], ["b", "a"], ["b", "a"]]

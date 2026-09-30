@@ -161,6 +161,11 @@ class Task:
     vm_results: list[dict[str, Any]] = field(default_factory=list)
     # Pull request (or compare link) per pushed repository, by name.
     pull_requests: dict[str, str] = field(default_factory=dict)
+    # Dry run: build, test and review on local branches only — nothing is
+    # pushed, no PR, no VM step.
+    dry_run: bool = False
+    # Design discussion: the owner's feedback per revision round, oldest first.
+    design_rounds: list[dict[str, Any]] = field(default_factory=list)
     transitions: list[Transition] = field(default_factory=list)
     metrics: Metrics = field(default_factory=Metrics)
 

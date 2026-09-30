@@ -3,6 +3,9 @@
     chopin -p PROJECT run "Add retry to outward actions" [--base themis=feat/x]
                                          start a feature and drive it
     chopin status [TASK]                 state, metrics, pending approval
+    chopin run "..." --dry-run           build, test and review on local branches only
+    chopin run "..." --primary themis    lead in another repository of the project
+    chopin revise  [TASK] -m FEEDBACK    design discussion: architect redesigns with it
     chopin approve [TASK] [-m COMMENT]   grant the pending approval, continue
     chopin reject  [TASK] [-m COMMENT]   deny the pending approval, continue
     chopin resume  [TASK] [-g GUIDANCE]  continue after escalation / failure
@@ -62,9 +65,10 @@ def combined_notes(repos: list[Repo]) -> str:
                         for i, r in enumerate(repos))
 
 
-def load_repos(workspace: Path, config: Path | None, project: Path | None) -> list[Repo]:
+def load_repos(workspace: Path, config: Path | None, project: Path | None,
+               primary: str | None = None) -> list[Repo]:
     if project is not None:
-        return load_project(project)
+        return load_project(project, primary)
     cfg = RuntimeConfig.load(workspace, config)
     return [Repo(cfg.target.name or workspace.name, workspace, cfg)]
 
@@ -87,6 +91,13 @@ def render(task: Task) -> str:
     if task.approval and task.approval.granted is None:
         lines.append(f"APPROVAL NEEDED: {task.approval.action} ({task.approval.reason})")
         lines.append("  -> chopin approve | chopin reject")
+    if task.dry_run:
+        lines.append("DRY RUN: local branches only; nothing is pushed")
+    if task.design_rounds:
+        lines.append(f"design rounds: {len(task.design_rounds)} (previous designs kept as "
+                     "openai/architecture-rN.md)")
+    if task.approval and task.approval.granted is None and task.approval.action == "approve_design":
+        lines.append("  -> or discuss it: chopin revise -m \"<your feedback>\"")
     if task.state is TaskState.AWAITING_VM_VERIFICATION:
         lines.append("AWAITING VM VERIFICATION: follow artifacts/<task>/vm-checklist.md in the state "
                      "directory, then `chopin verify -m \"...\"` or `chopin reopen -m \"...\"`")
@@ -122,11 +133,18 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("request", nargs="+")
     run.add_argument("--base", action="append", default=[], metavar="REPO=BRANCH",
                      help="base branch for a repository (repeatable), e.g. themis=feat/harness-integration")
-    for name in ("status", "approve", "reject", "resume", "abort", "verify", "reopen"):
+    run.add_argument("--dry-run", action="store_true",
+                     help="local branches only: build, test and review, but never push, open a PR or wait for the VM")
+    run.add_argument("--primary", metavar="REPO",
+                     help="with -p: the repository this feature leads in (default: the project's first)")
+    for name in ("status", "approve", "reject", "revise", "resume", "abort", "verify", "reopen"):
         sp = sub.add_parser(name)
         sp.add_argument("task", nargs="?")
         if name in ("approve", "reject"):
             sp.add_argument("-m", "--comment")
+        if name == "revise":
+            sp.add_argument("-m", "--message", required=True,
+                            help="your feedback on the proposed design")
         if name in ("verify", "reopen"):
             sp.add_argument("-m", "--message", required=True,
                             help="what you ran and what you saw")
@@ -139,12 +157,20 @@ def main(argv: list[str] | None = None) -> int:
     ws = args.workspace.resolve()
 
     try:
-        repos = load_repos(ws, args.config, args.project)
+        repos = load_repos(ws, args.config, args.project, getattr(args, "primary", None))
         bases = dict(b.split("=", 1) for b in getattr(args, "base", []))
+        state = StateManager(resolve_state_dir(repos[0].cfg, repos[0].root))
+        if args.project is not None and args.cmd not in ("run", "history"):
+            # A task keeps the primary repository it was started with.
+            try:
+                led = state.load(getattr(args, "task", None)).repo
+            except FileNotFoundError:
+                led = ""
+            if led and led != repos[0].name:
+                repos = load_repos(ws, args.config, args.project, led)
     except (FileNotFoundError, ValueError, KeyError) as e:
         print(f"config: {e}", file=sys.stderr)
         return 2
-    state = StateManager(resolve_state_dir(repos[0].cfg, repos[0].root))
     if args.cmd == "history":
         for row in state.history():
             print(f"{row['id']}  {row['state']:<18} {row['branch']:<50} {row['request'][:60]}")
@@ -155,7 +181,9 @@ def main(argv: list[str] | None = None) -> int:
         orch = build_orchestrator(repos)
         try:
             if args.cmd == "run":
-                task = orch.start(" ".join(args.request), bases=bases)
+                task = orch.start(" ".join(args.request), bases=bases, dry_run=args.dry_run)
+            elif args.cmd == "revise":
+                task = orch.revise(args.task, args.message)
             elif args.cmd == "verify":
                 task = orch.verify(args.task, args.message, where=args.where)
             elif args.cmd == "reopen":

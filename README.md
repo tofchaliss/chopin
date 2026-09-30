@@ -136,6 +136,9 @@ export CHOPIN="chopin -p <base>/chopin/config/projects/themis-platform.yaml"
 $CHOPIN run "Add retry to outward actions"        # the architect decides which repos it touches
 $CHOPIN run "..." --base themis=feat/harness-integration   # Themis side builds on that branch
 $CHOPIN status                                    # state, iterations, cost, branches, pending approval
+$CHOPIN run "..." --dry-run                       # local branches only: build, test, review; no push/PR/VM
+$CHOPIN run "..." --primary themis                # lead in Themis (a Themis-only milestone)
+$CHOPIN revise -m "feedback on the design"        # design discussion: the architect redesigns; repeat
 $CHOPIN approve -m "spec looks right"             # design approval (every feature), push approval
 $CHOPIN resume -g "keep the change inside L4"     # after an escalation or failure
 $CHOPIN verify -m "ran X on the VM, saw Y"        # it works on the enterprise VM: done
