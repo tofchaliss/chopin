@@ -547,3 +547,26 @@ def test_cli_follows_the_primary_a_task_was_started_with(tmp_path, monkeypatch):
     assert cli.main(["-p", str(project), "revise", "-m", "narrow it"]) == 10
     assert cli.main(["-p", str(project), "approve", "-m", "ok"]) == 0
     assert seen == [["b", "a"], ["b", "a"], ["b", "a"]]
+
+
+def test_output_names_the_design_and_checklist_paths(platform, tmp_path):
+    from themis_ai.cli import render
+    from themis_ai.state import StateManager
+
+    _, _, state, build = platform
+    orch, _, _ = build(repositories=("runtime",), verification="vm")
+    orch.cfg.workflow.require_design_approval = True
+    task = orch.start("x")
+    sm = StateManager(state)
+    out = render(task, sm)
+    design = state / "artifacts" / task.id / "openai" / "architecture.md"
+    assert design.exists()
+    assert f"design:     {design}" in out
+    assert f"-> read the design: cat {design}" in out
+    assert f"artifacts:  {state / 'artifacts' / task.id}" in out
+
+    task = orch.decide(task.id, True)
+    out = render(task, sm)
+    checklist = state / "artifacts" / task.id / "vm-checklist.md"
+    assert checklist.exists() and f"follow {checklist}," in out
+    assert "read the design" not in out
