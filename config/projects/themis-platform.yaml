@@ -7,13 +7,17 @@
 # workflow. The architect sees both repositories and names in the spec which
 # ones the feature changes; a secondary repository gets a branch only then.
 # Task state: $CHOPIN_HOME/themis-platform or ~/.chopin/themis-platform.
+#
+# Paths are relative to this file: the checkouts sit beside chopin's own, e.g.
+#   <base>/chopin  <base>/themis-ai-runtime  <base>/themis
+# Use an absolute path (or $VAR / ~) to point elsewhere.
 name: themis-platform
 repos:
   - name: themis-ai-runtime
-    path: ~/src/themis-ai-runtime
+    path: ../../../themis-ai-runtime
     config: ../targets/themis-ai-runtime.yaml
   - name: themis
-    path: ~/src/themis
+    path: ../../../themis
     config: ../targets/themis.yaml
 overrides:
   workflow:

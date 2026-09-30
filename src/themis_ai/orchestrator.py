@@ -264,7 +264,7 @@ class Orchestrator:
             feedback=task.pending_feedback if fixing else None,
             session_id=task.claude_session_id,
             extra_dirs=[self.repos[w.name].root for w in task.secondary.values()] or None,
-            env=self._go_env(task) or None,
+            env=self._run_env(task) or None,
         )
         self._account(task, result.usage, "claude")
         if result.session_id:
@@ -280,7 +280,7 @@ class Orchestrator:
 
     def _test(self, task: Task) -> None:
         task.metrics.test_runs += 1
-        env = self._go_env(task) or None
+        env = self._run_env(task) or None
         multi = bool(task.secondary)
         results = []
         for repo in self._involved(task):
@@ -469,6 +469,15 @@ class Orchestrator:
             if diff.strip():
                 parts.append(f"### Repository: {repo.name}\n\n{diff}")
         return "\n".join(parts)
+
+    def _run_env(self, task: Task) -> dict[str, str]:
+        """Environment for checks and Claude: every involved target's ``env``,
+        plus the Go-module link of a multi-repo feature."""
+        env: dict[str, str] = {}
+        for repo in self._involved(task):
+            env.update(repo.cfg.target.env)
+        env.update(self._go_env(task))
+        return env
 
     def _go_env(self, task: Task) -> dict[str, str]:
         """Link the Go modules of a multi-repo feature through a go.work kept in the

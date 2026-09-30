@@ -109,10 +109,13 @@ decision is saved under `<state dir>/decisions/<task>/`.
 On the laptop that runs chopin (macOS or Linux):
 
 ```bash
-git clone https://github.com/tofchaliss/chopin ~/src/chopin
-git clone https://github.com/tofchaliss/themis ~/src/themis                        # clones used only by chopin
-git clone https://github.com/tofchaliss/themis-ai-runtime ~/src/themis-ai-runtime
-cd ~/src/chopin
+# Clone all three side by side in one folder (any folder); the project file finds
+# themis and themis-ai-runtime next to chopin. They are clones used only by chopin.
+cd <base>
+git clone https://github.com/tofchaliss/chopin
+git clone https://github.com/tofchaliss/themis-ai-runtime
+git clone https://github.com/tofchaliss/themis
+cd chopin
 python3 -m venv .venv && . .venv/bin/activate    # Python 3.11+
 pip install -e '.[all]'          # openai + mcp extras
 export OPENAI_API_KEY=...        # OpenAI platform API key (billing enabled)
@@ -128,7 +131,7 @@ with `caffeinate -i` so the machine does not sleep mid-task (a stopped task can 
 
 ```bash
 ```bash
-export CHOPIN="chopin -p $HOME/src/chopin/config/projects/themis-platform.yaml"
+export CHOPIN="chopin -p <base>/chopin/config/projects/themis-platform.yaml"
 $CHOPIN run "Add retry to outward actions"        # the architect decides which repos it touches
 $CHOPIN run "..." --base themis=feat/harness-integration   # Themis side builds on that branch
 $CHOPIN status                                    # state, iterations, cost, branches, pending approval

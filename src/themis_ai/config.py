@@ -192,6 +192,9 @@ class TargetConfig:
     # Build/run steps shown in the enterprise-VM checklist. Placeholders:
     # {branch} {base} {sha} {repo}.
     vm_steps: list[str] = field(default_factory=list)
+    # Environment for the target's checks and for Claude Code while it works on
+    # this repository (e.g. keep live-model tests off the deterministic gate).
+    env: dict[str, str] = field(default_factory=dict)
 
     def notes(self) -> str:
         return Path(self.notes_file).read_text() if self.notes_file else ""
@@ -285,7 +288,10 @@ def load_project(path: Path) -> list[Repo]:
         raise ValueError(f"project {name}: no repos")
     repos: list[Repo] = []
     for entry in entries:
-        root = Path(os.path.expandvars(str(entry["path"]))).expanduser().resolve()
+        root = Path(os.path.expandvars(str(entry["path"]))).expanduser()
+        # A relative path is relative to the project file, so a project can name
+        # checkouts that sit beside chopin's own, wherever they are cloned.
+        root = (root if root.is_absolute() else path.parent / root).resolve()
         cfg_path = Path(entry["config"])
         cfg_path = cfg_path if cfg_path.is_absolute() else path.parent / cfg_path
         cfg = RuntimeConfig.load(root, cfg_path)
