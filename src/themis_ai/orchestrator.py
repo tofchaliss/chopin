@@ -126,6 +126,7 @@ class Orchestrator:
             task.iteration_budget = task.metrics.iterations + self.cfg.workflow.max_iterations
             task.metrics.iterations += 1
             if guidance:
+                task.owner_guidance.append(guidance)
                 task.pending_feedback = f"{task.pending_feedback or ''}\n\n## Guidance from the owner\n\n{guidance}"
             task.transition(TaskState.FIXING, "resumed by owner after escalation")
         elif task.state is TaskState.FAILED and task.resume_state:
@@ -353,7 +354,8 @@ class Orchestrator:
             self._to_fixing(task, "The change is empty: no code was modified relative to "
                                   f"{task.base_branch}. Implement the specification.", "empty diff")
             return
-        review = self.architect.review(kind, task.request, self._spec(task), diff, self._checks_summary(task))
+        review = self.architect.review(kind, self._review_request(task), self._spec(task), diff,
+                                       self._checks_summary(task))
         self._account(task, review.usage, "openai")
         self._write_artifact(task, kind, review.to_markdown())
         self.state.record_decision(task, f"{kind.value}-review", {
@@ -630,6 +632,14 @@ class Orchestrator:
         if not task.spec:
             raise RuntimeError("task has no specification")
         return Spec(**task.spec)
+
+    @staticmethod
+    def _review_request(task: Task) -> str:
+        if not task.owner_guidance:
+            return task.request
+        decisions = "\n".join(f"- {g}" for g in task.owner_guidance)
+        return (f"{task.request}\n\n## Owner decisions (override the specification where they differ)\n\n"
+                f"{decisions}\n\nDo not block on a point the owner has decided; review the rest as usual.")
 
     def _checks_summary(self, task: Task) -> str:
         return self.state.read_artifact(task.id, ARTIFACTS["tests"]) or "(no checks recorded)"

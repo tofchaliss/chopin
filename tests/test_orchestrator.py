@@ -98,6 +98,24 @@ def test_escalates_when_iteration_budget_exhausted_then_resumes(build, config):
     task = orch.resume(task.id, guidance="the file must contain exactly 'done'")
     assert task.state is TaskState.COMPLETED
     assert "Guidance from the owner" in impl.calls[3]["feedback"]
+    assert task.owner_guidance == ["the file must contain exactly 'done'"]
+
+
+def test_owner_guidance_reaches_later_reviews(build, config):
+    config.workflow.max_iterations = 1
+    architect = FakeArchitect(reviews={ReviewKind.CODE: [False, False, True]})
+    requests = []
+    review = architect.review
+    architect.review = lambda kind, request, *a: (requests.append(request), review(kind, request, *a))[1]
+    orch, _, _ = build(architect=architect, outputs=["done", "done", "done"])
+    task = orch.start("Implement it")
+    assert task.state is TaskState.ESCALATED
+    assert "Owner decisions" not in requests[0]
+
+    task = orch.resume(task.id, guidance="keep the event id as the dedup key")
+    assert task.state is TaskState.COMPLETED
+    assert all("keep the event id as the dedup key" in r for r in requests[2:])
+    assert len(requests) > 2
 
 
 def test_merge_delivery_requires_approval(build, repo, config, state_dir):

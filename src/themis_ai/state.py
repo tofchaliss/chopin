@@ -166,6 +166,9 @@ class Task:
     dry_run: bool = False
     # Design discussion: the owner's feedback per revision round, oldest first.
     design_rounds: list[dict[str, Any]] = field(default_factory=list)
+    # The owner's guidance given on resume, oldest first. Every later review sees
+    # it too, so a reviewer does not keep blocking on what the owner decided.
+    owner_guidance: list[str] = field(default_factory=list)
     transitions: list[Transition] = field(default_factory=list)
     metrics: Metrics = field(default_factory=Metrics)
 
