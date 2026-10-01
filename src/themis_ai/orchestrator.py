@@ -281,6 +281,9 @@ class Orchestrator:
         return (f"{task.request}\n\n## Design under discussion (your previous specification)\n\n"
                 f"{self._spec(task).to_markdown()}\n\n## The owner's feedback on it\n\n{rounds}\n\n"
                 "Produce a revised specification that addresses every point of the feedback. "
+                "Change only what the feedback asks for: where it names a section, change that "
+                "section and keep the others as they were, word for word, unless the change "
+                "forces an update (say which under risks). "
                 "Where you disagree, keep your position and say why under risks.")
 
     def _design_gate(self, task: Task) -> None:
