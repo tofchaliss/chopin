@@ -118,6 +118,30 @@ def test_owner_guidance_reaches_later_reviews(build, config):
     assert len(requests) > 2
 
 
+def test_owner_can_accept_review_findings_without_a_fix_round(build, config):
+    config.workflow.max_iterations = 0
+    architect = FakeArchitect(reviews={ReviewKind.SECURITY: [False]})
+    orch, _, impl = build(architect=architect)
+    task = orch.start("Implement it")
+    assert task.state is TaskState.ESCALATED
+    assert task.transitions[-1].from_state == "SECURITY_REVIEW"
+
+    task = orch.resume(task.id, guidance="label ids are UUIDs", accept=True)
+    assert task.state is TaskState.COMPLETED
+    assert "owner accepted the remaining security findings" in [t.note for t in task.transitions]
+    assert len(impl.calls) == 1  # no fix round
+    assert task.owner_guidance == ["label ids are UUIDs"]
+
+
+def test_accept_needs_a_review_escalation(build, config):
+    config.workflow.max_iterations = 0
+    orch, _, _ = build(outputs=["wrong"])
+    task = orch.start("Implement it")
+    assert task.state is TaskState.ESCALATED  # escalated from the checks, not a review
+    with pytest.raises(RuntimeError, match="did not escalate from a review"):
+        orch.resume(task.id, accept=True)
+
+
 def test_merge_delivery_requires_approval(build, repo, config, state_dir):
     config.workflow.delivery = "merge"
     orch, _, _ = build()
