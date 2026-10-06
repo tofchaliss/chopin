@@ -8,7 +8,8 @@
     chopin revise  [TASK] -m FEEDBACK    design discussion: architect redesigns with it
     chopin approve [TASK] [-m COMMENT]   grant the pending approval, continue
     chopin reject  [TASK] [-m COMMENT]   deny the pending approval, continue
-    chopin resume  [TASK] [-g GUIDANCE]  continue after escalation / failure
+    chopin resume  [TASK] [-g GUIDANCE] [--accept]  continue after escalation / failure
+                                     (--accept: take the review's findings as they are)
     chopin verify  [TASK] -m EVIDENCE    it works on the enterprise VM: close it
     chopin reopen  [TASK] -m FAILURE     it failed on the VM: back to the fix loop
     chopin abort   [TASK]                stop; keep the branches, return to base
@@ -119,7 +120,7 @@ def render(task: Task, state: StateManager | None = None) -> str:
         lines.append(f"PR {name}: {url}")
     if task.state is TaskState.ESCALATED:
         lines.append(f"ESCALATED: review {artifact('')} (reviews: openai/, test results: claude/), then "
-                     "`chopin resume -g \"...\"` or `chopin abort`")
+                     "`chopin resume -g \"...\"`, `chopin resume --accept` or `chopin abort`")
         if task.pending_feedback:
             lines.append("last feedback:\n" + task.pending_feedback[:2000])
     if task.last_error:
@@ -163,6 +164,9 @@ def main(argv: list[str] | None = None) -> int:
                             help="where you checked: vm (default), mac, or any short label")
         if name == "resume":
             sp.add_argument("-g", "--guidance")
+            sp.add_argument("--accept", action="store_true",
+                            help="accept the findings of the review that escalated and move on, "
+                                 "without a fix round")
     sub.add_parser("history")
     args = p.parse_args(argv)
     ws = args.workspace.resolve()
@@ -202,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
             elif args.cmd in ("approve", "reject"):
                 task = orch.decide(args.task, args.cmd == "approve", comment=args.comment)
             elif args.cmd == "resume":
-                task = orch.resume(args.task, guidance=args.guidance)
+                task = orch.resume(args.task, guidance=args.guidance, accept=args.accept)
             else:
                 task = orch.abort(args.task)
         except PreflightError as e:

@@ -70,7 +70,9 @@ TRANSITIONS: dict[TaskState, set[TaskState]] = {
     TaskState.AWAITING_VM_VERIFICATION: {TaskState.COMPLETED, TaskState.FIXING},
     # Leaving a control state returns to the state recorded in `resume_state`.
     TaskState.AWAITING_APPROVAL: set(TaskState) - {TaskState.NEW},
-    TaskState.ESCALATED: {TaskState.FIXING, TaskState.ABORTED, TaskState.REJECTED},
+    # The owner may also accept a review's remaining findings and move on to the next gate.
+    TaskState.ESCALATED: {TaskState.FIXING, TaskState.ABORTED, TaskState.REJECTED,
+                          TaskState.SECURITY_REVIEW, TaskState.FINAL_REVIEW, TaskState.APPROVED},
     TaskState.FAILED: set(TaskState) - {TaskState.NEW},
     TaskState.REJECTED: set(),
     TaskState.COMPLETED: set(),

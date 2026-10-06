@@ -119,9 +119,26 @@ class Orchestrator:
         self._emit(f"created task {task.id} on branch {task.branch}", task)
         return self.advance(task)
 
-    def resume(self, task_id: str | None = None, guidance: str | None = None) -> Task:
+    def resume(self, task_id: str | None = None, guidance: str | None = None,
+               accept: bool = False) -> Task:
         task = self.state.load(task_id)
-        if task.state is TaskState.ESCALATED:
+        if task.state is TaskState.ESCALATED and accept:
+            # The owner read the review that escalated and accepts its remaining findings:
+            # no fix round, the task moves on to the next gate.
+            review = TaskState(task.transitions[-1].from_state) if task.transitions else None
+            if review not in REVIEW_STATE:
+                raise RuntimeError(f"task {task.id} did not escalate from a review; "
+                                   "nothing to accept (use resume -g instead)")
+            if guidance:
+                task.owner_guidance.append(guidance)
+            self.state.record_decision(task, "owner-accepted-findings", {
+                "review": review.value, "guidance": guidance})
+            self.state.audit({"type": "findings_accepted", "task": task.id,
+                              "review": review.value})
+            task.pending_feedback = None
+            task.transition(self._next_gate(review),
+                            f"owner accepted the remaining {REVIEW_STATE[review].value} findings")
+        elif task.state is TaskState.ESCALATED:
             # A human has looked at the escalation: extend the budget and retry.
             task.iteration_budget = task.metrics.iterations + self.cfg.workflow.max_iterations
             task.metrics.iterations += 1
@@ -656,7 +673,9 @@ class Orchestrator:
 
     @staticmethod
     def _review_feedback(review: Review, blocking: list) -> str:
-        return (f"The independent {review.kind.value} reviewer rejected the change.\n\n"
+        verdict = ("accepted the change, but findings at or above the blocking severity stop it"
+                   if review.accepted else "rejected the change")
+        return (f"The independent {review.kind.value} reviewer {verdict}.\n\n"
                 + review.to_markdown()
                 + (f"\nBlocking findings: {len(blocking)}. Address every blocking finding.\n" if blocking else ""))
 
