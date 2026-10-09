@@ -192,6 +192,9 @@ The prompts are target-neutral; a target's notes file is appended to every OpenA
 (architect and all reviewers) as the authoritative rules for that repository. Claude Code reads
 the target's own `CLAUDE.md`.
 
+The owner's engineering principles, [`AGENT.md`](AGENT.md), go to every role, the builder
+included, ahead of the target's notes; where the two disagree, the target's rules win.
+
 ## Configuration
 
 Per-target configs live in this repo under [`config/targets/`](config/targets/) and are passed

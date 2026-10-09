@@ -34,8 +34,9 @@ def _default_runner(cmd: list[str], cwd: Path, timeout: int,
 
 class ClaudeCodeImplementer:
     def __init__(self, cfg: ClaudeConfig, workspace: Path, runner: Runner | None = None,
-                 mcp_config: Path | None = None):
+                 mcp_config: Path | None = None, principles: str = ""):
         self.cfg = cfg
+        self.principles = principles
         self.workspace = workspace
         self.runner = runner or _default_runner
         self.mcp_config = mcp_config
@@ -46,7 +47,7 @@ class ClaudeCodeImplementer:
             self.cfg.binary, "-p", prompt,
             "--output-format", "json",
             "--permission-mode", self.cfg.permission_mode,
-            "--append-system-prompt", prompts.IMPLEMENTER,
+            "--append-system-prompt", prompts.with_principles(prompts.IMPLEMENTER, self.principles),
         ]
         if self.cfg.allowed_tools:
             cmd += ["--allowedTools", *self.cfg.allowed_tools]
