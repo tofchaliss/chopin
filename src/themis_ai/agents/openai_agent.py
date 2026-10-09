@@ -61,9 +61,11 @@ REVIEW_SCHEMA: dict[str, Any] = {
 
 
 class OpenAIArchitectReviewer:
-    def __init__(self, cfg: OpenAIConfig, client: Any | None = None, target_notes: str = ""):
+    def __init__(self, cfg: OpenAIConfig, client: Any | None = None, target_notes: str = "",
+                 principles: str = ""):
         self.cfg = cfg
         self.target_notes = target_notes
+        self.principles = principles
         if client is None:
             try:
                 from openai import OpenAI
@@ -75,9 +77,13 @@ class OpenAIArchitectReviewer:
             client = OpenAI(api_key=api_key, timeout=cfg.timeout_seconds)
         self.client = client
 
+    def _role(self, instructions: str) -> str:
+        return prompts.with_target(prompts.with_principles(instructions, self.principles),
+                                   self.target_notes)
+
     def design(self, request: str, repo_context: str) -> Spec:
         data, usage = self._call(
-            prompts.with_target(prompts.ARCHITECT, self.target_notes),
+            self._role(prompts.ARCHITECT),
             f"## Request\n\n{request}\n\n## Repository context\n\n{repo_context}",
             "implementation_spec", SPEC_SCHEMA,
         )
@@ -86,7 +92,7 @@ class OpenAIArchitectReviewer:
     def review(self, kind: ReviewKind, request: str, spec: Spec, diff: str, checks: str) -> Review:
         diff = _truncate(diff, self.cfg.diff_budget_chars)
         data, usage = self._call(
-            prompts.with_target(prompts.REVIEW_PROMPTS[kind.value], self.target_notes),
+            self._role(prompts.REVIEW_PROMPTS[kind.value]),
             f"## Original request\n\n{request}\n\n{spec.to_markdown()}\n\n"
             f"## Check results\n\n{checks}\n\n## Diff\n\n```diff\n{diff}\n```",
             f"{kind.value}_review", REVIEW_SCHEMA,

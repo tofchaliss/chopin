@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from themis_ai.agents import prompts
+
 from themis_ai.agents.base import ReviewKind
 from themis_ai.agents.claude_code import ClaudeCodeImplementer
 from themis_ai.agents.openai_agent import OpenAIArchitectReviewer
@@ -269,6 +271,36 @@ def test_target_notes_reach_every_openai_role():
     bare = OpenAIArchitectReviewer(OpenAIConfig(), client=SimpleNamespace(responses=FakeResponses([spec_payload])))
     bare.design("req", "ctx")
     assert "Target architecture notes" not in bare.client.responses.calls[0]["instructions"]
+
+
+def test_owner_principles_reach_every_role(tmp_path):
+    spec_payload = {k: v for k, v in make_spec().__dict__.items() if k != "usage"}
+    review_payload = {"verdict": "accept", "summary": "ok", "findings": []}
+    responses = FakeResponses([spec_payload, review_payload])
+    agent = OpenAIArchitectReviewer(OpenAIConfig(), client=SimpleNamespace(responses=responses),
+                                    target_notes="RULE-XYZ", principles="PRINCIPLE-42: no stopgaps")
+    spec = agent.design("req", "ctx")
+    agent.review(ReviewKind.CODE, "req", spec, "diff", "checks")
+    for call in responses.calls:
+        # Principles first, then the target's notes, which win where they disagree.
+        assert call["instructions"].index("PRINCIPLE-42") < call["instructions"].index("RULE-XYZ")
+
+    seen = {}
+
+    def runner(cmd, cwd, timeout, env):
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, json.dumps({"result": "ok"}), "")
+
+    ClaudeCodeImplementer(ClaudeConfig(), tmp_path, runner=runner,
+                          principles="PRINCIPLE-42: no stopgaps").implement("x", make_spec())
+    cmd = seen["cmd"]
+    assert "PRINCIPLE-42" in cmd[cmd.index("--append-system-prompt") + 1]
+
+
+def test_owner_principles_file(tmp_path):
+    assert prompts.PRINCIPLES_FILE.name == "AGENT.md" and prompts.PRINCIPLES_FILE.exists()
+    assert prompts.owner_principles(tmp_path / "absent.md") == ""
+    assert prompts.with_principles("ROLE", "") == "ROLE"
 
 
 @pytest.mark.parametrize("rel,pattern,expected", [

@@ -2,8 +2,16 @@
 
 The prompts are target-neutral. Each target (Themis, the Themis AI Harness, ...)
 supplies its own architecture notes (``target.notes_file``), which are appended
-to every OpenAI role as the authoritative rules for that repository.
+to every OpenAI role as the authoritative rules for that repository. The owner's
+engineering principles (``AGENT.md`` at chopin's root) go to every role, the
+builder included.
 """
+
+from pathlib import Path
+
+# chopin's own root: src/themis_ai/agents/prompts.py -> parents[3]. chopin runs from
+# an editable install (README), so the file is read where the owner edits it.
+PRINCIPLES_FILE = Path(__file__).resolve().parents[3] / "AGENT.md"
 
 ARCHITECT = """\
 You are the Architecture Agent in an orchestrated development workflow.
@@ -98,3 +106,21 @@ def with_target(instructions: str, notes: str) -> str:
     if not notes.strip():
         return instructions
     return f"{instructions}\n## Target architecture notes (authoritative)\n\n{notes.strip()}\n"
+
+
+def owner_principles(path: Path = PRINCIPLES_FILE) -> str:
+    """The owner's engineering principles, or "" when the file is absent."""
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return ""
+
+
+def with_principles(instructions: str, principles: str) -> str:
+    """Append the owner's engineering principles to a role prompt."""
+    if not principles.strip():
+        return instructions
+    return (f"{instructions}\n## Owner engineering principles\n\n"
+            "They govern how to build. Where a target's own rules require something "
+            "(for example a database migration for a schema change), the target's "
+            f"rules win.\n\n{principles.strip()}\n")

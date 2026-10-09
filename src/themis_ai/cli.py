@@ -44,14 +44,18 @@ EXIT = {
 def build_orchestrator(repos: list[Repo]) -> Orchestrator:
     from .agents.claude_code import ClaudeCodeImplementer
     from .agents.openai_agent import OpenAIArchitectReviewer
+    from .agents.prompts import owner_principles
 
     primary, others = repos[0], repos[1:]
     cfg = primary.cfg
     mcp = Path(cfg.claude.mcp_config) if cfg.claude.mcp_config else None
+    principles = owner_principles()
     return Orchestrator(
         primary.root, cfg,
-        architect=OpenAIArchitectReviewer(cfg.openai, target_notes=combined_notes(repos)),
-        implementer=ClaudeCodeImplementer(cfg.claude, primary.root, mcp_config=mcp),
+        architect=OpenAIArchitectReviewer(cfg.openai, target_notes=combined_notes(repos),
+                                          principles=principles),
+        implementer=ClaudeCodeImplementer(cfg.claude, primary.root, mcp_config=mcp,
+                                          principles=principles),
         on_event=lambda msg, task: print(f"[{task.id}] {msg}", file=sys.stderr, flush=True),
         others=others,
     )
